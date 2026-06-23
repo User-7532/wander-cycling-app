@@ -1,4 +1,4 @@
-import {useState} from 'react'
+import {useState, useEffect} from 'react'
 import {supabase} from './supabase'
 
 function LoginPage({onLogin}) {
@@ -44,41 +44,54 @@ function LoginPage({onLogin}) {
     )
 }
 
-function Dashboard({onLogout}) {
-const schedules = [
-    { id: 1, title: '荒川サイクリングロード', date: '2026-07-05', place: '荒川河川敷'},
-    { id: 2, title: '箱根ヒルクライム', date: '2026-08-12', place: '小田原駅集合！'},
-    { id: 3, title: '弟子屈ラーメンをたべる', date: '2025-08-28', place: '弟子屈'}
-]
+function Dashboard({ onLogout }) {
+  const [schedules, setSchedules] = useState([])
 
-    return (
-        <div style={{ padding: '40px' }}>
-            <div style={{ display: 'flex'}}>
-                <h1>Wander Cycling Dashboard</h1>
-                <button
-                    style={{}}
-                    onClick={onLogout}
-                >
-                    ログアウト
-                </button>
-            </div>
-            <p>ダッシュボードへようこそ。</p>
+  async function fetchSchedules() {
+    const { data, error } = await supabase
+      .from('schedules')
+      .select('*')
+      .order('start_date', { ascending: true })
 
-            <h2>📅スケジュール</h2>
-            <div style = {{}}>
-                {schedules.map((s) => (
-                    <div
-                        key={s.id}
-                        style={{}}
-                    >
-                        <h3 style={{ margin: '0 0 8px 0' }}>{s.title}</h3>
-                        <p style={{ margin: '4px 0', color: '#555' }}>📍 {s.place}</p>
-                        <p style={{ margin: '4px 0', color: '#555' }}>🗓 {s.date}</p>
-                    </div>
-                ))}
-            </div>
-        </div>
-    )
+    if (error) {
+      console.log(error)
+    } else {
+      setSchedules(data)
+    }
+  }
+
+  useEffect(() => {
+    fetchSchedules()
+  }, [])
+
+  return (
+    <div style={{ padding: '40px' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '32px' }}>
+        <h1>WanderCycling</h1>
+        <button
+          onClick={onLogout}
+          style={{ padding: '8px 16px', backgroundColor: '#ef4444', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+          ログアウト
+        </button>
+      </div>
+
+      <h2>📅 スケジュール</h2>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '16px' }}>
+        {schedules.map((s) => (
+          <div key={s.id} style={{
+            padding: '16px',
+            backgroundColor: 'white',
+            borderRadius: '8px',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.08)'
+          }}>
+            <h3 style={{ margin: '0 0 8px 0' }}>{s.title}</h3>
+            <p style={{ margin: '4px 0', color: '#555' }}>📍 {s.place}</p>
+            <p style={{ margin: '4px 0', color: '#555' }}>🗓 {s.start_date}～{s.end_date}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
 }
 
 function App() {
