@@ -45,9 +45,15 @@ function LoginPage({onLogin}) {
 }
 
 function Dashboard({onLogout}) {
+const schedules = [
+    { id: 1, title: '荒川サイクリングロード', date: '2026-07-05', place: '荒川河川敷'},
+    { id: 2, title: '箱根ヒルクライム', date: '2026-08-12', place: '小田原駅集合！'},
+    { id: 3, title: '弟子屈ラーメンをたべる', date: '2025-08-28', place: '弟子屈'}
+]
+
     return (
-        <div style={{}}>
-            <div style={{}}>
+        <div style={{ padding: '40px' }}>
+            <div style={{ display: 'flex'}}>
                 <h1>Wander Cycling Dashboard</h1>
                 <button
                     style={{}}
@@ -57,6 +63,20 @@ function Dashboard({onLogout}) {
                 </button>
             </div>
             <p>ダッシュボードへようこそ。</p>
+
+            <h2>📅スケジュール</h2>
+            <div style = {{}}>
+                {schedules.map((s) => (
+                    <div
+                        key={s.id}
+                        style={{}}
+                    >
+                        <h3 style={{ margin: '0 0 8px 0' }}>{s.title}</h3>
+                        <p style={{ margin: '4px 0', color: '#555' }}>📍 {s.place}</p>
+                        <p style={{ margin: '4px 0', color: '#555' }}>🗓 {s.date}</p>
+                    </div>
+                ))}
+            </div>
         </div>
     )
 }
