@@ -1,47 +1,72 @@
 import {useState, useEffect} from 'react'
 import {supabase} from './supabase'
+import AuthCallback from './AuthCallback'
 
 function LoginPage({onLogin}) {
-    const [email, setEmail] = useState('')
-    const [password, setPassword] = useState('')
-    const [error, setError] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
 
-    async function handleLogin(){
-        setError('')
-        const {error}=await supabase.auth.signInWithPassword({email, password})
-        if(error){
-            setError('メールアドレスかパスワードが違います。')
-        } else {
-            onLogin()
-        }
+  function handleLineLogin(){
+    const lineAuthUrl= `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${import.meta.env.VITE_LINE_CHANNEL_ID}&redirect_uri=${encodeURIComponent('http://localhost:5173/auth/callback')}&state=wandercycling&scope=profile%20openid`
+    window.location.href = lineAuthUrl
+  }
+
+  async function handleLogin(){
+    setError('')
+    const {error}=await supabase.auth.signInWithPassword({email, password})
+    if(error){
+      setError('メールアドレスかパスワードが違います。')
+    } else {
+      onLogin()
     }
+  }
 
-    return(
-        <div style={{}}>
-            <div style={{}}>
-                <h2 style={{}}>Wander Cycling</h2>
-                <input
-                    style={{}}
-                    placeholder="メールアドレス"
-                    value={email}
-                    onChange={(e)=>setEmail(e.target.value)}
-                />
-                <input
-                    style={{}}
-                    placeholder="パスワード"
-                    value={password}
-                    onChange={(e)=>setPassword(e.target.value)}
-                />
-                {error && <p style={{}}>{error}</p>}
-                <button
-                    style={{}}
-                    onClick = {handleLogin}
-                >
-                    ログイン
-                </button>
-            </div>
-        </div>
-    )
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100vh', backgroundColor: '#f0f4f8' }}>
+      <div style={{ backgroundColor: 'white', padding: '40px', borderRadius: '12px', boxShadow: '0 4px 20px rgba(0,0,0,0.1)', width: '320px' }}>
+        <h2 style={{ textAlign: 'center', marginBottom: '24px' }}>🚴 WanderCycling</h2>
+
+        <button
+          onClick={handleLineLogin}
+          style={{
+            width: '100%',
+            padding: '12px',
+            backgroundColor: '#06C755',
+            color: 'white',
+            border: 'none',
+            borderRadius: '6px',
+            fontSize: '16px',
+            cursor: 'pointer',
+            marginBottom: '20px'
+          }}>
+          LINEでログイン
+        </button>
+
+        <hr style={{ marginBottom: '20px' }} />
+
+        <input
+          placeholder="メールアドレス"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          style={{ width: '100%', padding: '10px', marginBottom: '12px', borderRadius: '6px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+        />
+        <input
+          type="password"
+          placeholder="パスワード"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          style={{ width: '100%', padding: '10px', marginBottom: '8px', borderRadius: '6px', border: '1px solid #ccc', boxSizing: 'border-box' }}
+        />
+        {error && <p style={{ color: 'red', fontSize: '14px', marginBottom: '12px' }}>{error}</p>}
+        <button
+          onClick={handleLogin}
+          style={{ width: '100%', padding: '12px', backgroundColor: '#3b82f6', color: 'white', border: 'none', borderRadius: '6px', fontSize: '16px', cursor: 'pointer', marginTop: '8px' }}>
+          ログイン
+        </button>
+      </div>
+    </div>
+  )
 }
 
 function Dashboard({ onLogout }) {
@@ -95,14 +120,27 @@ function Dashboard({ onLogout }) {
 }
 
 function App() {
-    const [page, setPage] = useState('login')
+  const [page, setPage] = useState('login')
 
-    return (
-        <div>
-            {page === 'login' && <LoginPage onLogin={()=> setPage('dashboard')} />}
-            {page === 'dashboard' && <Dashboard onLogout={()=>setPage('login')}/>}
-        </div>
-    )
+  useEffect(() => {
+    // 既にログイン済みならダッシュボードへ
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session) setPage('dashboard')
+    })
+  }, [])
+
+  if (window.location.pathname === '/auth/callback') {
+    return <AuthCallback onLogin={() => {
+      window.location.href = '/'
+    }} />
+  }
+
+  return (
+    <div>
+      {page === 'login' && <LoginPage onLogin={() => setPage('dashboard')} />}
+      {page === 'dashboard' && <Dashboard onLogout={() => setPage('login')} />}
+    </div>
+  )
 }
 
 export default App
