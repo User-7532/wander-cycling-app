@@ -423,3 +423,27 @@ entrypoint = "./functions/line-auth/index.ts"
 # Specifies static files to be bundled with the function. Supports glob patterns.
 # For example, if you want to serve static HTML pages in your function:
 # static_files = [ "./functions/line-auth/*.html" ]
+
+[functions.line-bot]
+enabled = true
+verify_jwt = false
+import_map = "./functions/line-bot/deno.json"
+entrypoint = "./functions/line-bot/index.ts"
+
+[functions.broadcast-announcement]
+enabled = true
+verify_jwt = false
+import_map = "./functions/broadcast-announcement/deno.json"
+entrypoint = "./functions/broadcast-announcement/index.ts"
+
+[functions.check-disaster-alerts]
+enabled = true
+verify_jwt = false
+import_map = "./functions/check-disaster-alerts/deno.json"
+entrypoint = "./functions/check-disaster-alerts/index.ts"
+
+[functions.account-secret]
+enabled = true
+verify_jwt = true
+import_map = "./functions/account-secret/deno.json"
+entrypoint = "./functions/account-secret/index.ts"
