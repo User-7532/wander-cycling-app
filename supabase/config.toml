@@ -483,3 +483,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/task-deadline-reminders/deno.json"
 entrypoint = "./functions/task-deadline-reminders/index.ts"
+
+[functions.update-member-status-attributes]
+enabled = true
+verify_jwt = false
+import_map = "./functions/update-member-status-attributes/deno.json"
+entrypoint = "./functions/update-member-status-attributes/index.ts"
