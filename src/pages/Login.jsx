@@ -28,12 +28,6 @@ export default function Login() {
         className="w-full max-w-sm"
       >
         <div className="rounded-3xl border border-white/60 bg-card/90 p-8 shadow-xl shadow-primary/5 backdrop-blur-sm">
-          <img
-            src="/icon-128.png"
-            alt="WanderCycling"
-            className="mx-auto mb-5 h-20 w-20 rounded-2xl border border-border/60 bg-white object-cover shadow-lg shadow-primary/20"
-          />
-
           <div className="mb-8 text-center">
             <h1 className="text-2xl font-black tracking-tight">WanderCycling</h1>
             <p className="mt-1 text-sm text-muted-foreground">部員専用ポータルへようこそ</p>
