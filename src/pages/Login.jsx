@@ -30,7 +30,7 @@ export default function Login() {
         <div className="rounded-3xl border border-white/60 bg-card/90 p-8 shadow-xl shadow-primary/5 backdrop-blur-sm">
           <div className="mb-8 text-center">
             <h1 className="text-2xl font-black tracking-tight">WanderCycling</h1>
-            <p className="mt-1 text-sm text-muted-foreground">部員専用ポータルへようこそ</p>
+            <p className="mt-1 text-sm text-muted-foreground">ポータルサイトへようこそ</p>
           </div>
 
           <Button
@@ -45,7 +45,7 @@ export default function Login() {
           </Button>
         </div>
 
-        <p className="mt-6 text-center text-xs text-muted-foreground">WanderCycling 部内システム</p>
+        <p className="mt-6 text-center text-xs text-muted-foreground">ワンダーサイクリング同好会 部内システム</p>
       </motion.div>
     </div>
   )

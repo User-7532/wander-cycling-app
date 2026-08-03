@@ -32,10 +32,8 @@ const VISIBILITY_LABEL = { all: '全員', invite_only: '有志' }
 
 const CATEGORY_LABEL = {
   gasshuku: '合宿',
-  practice: '練習',
   event: 'イベント',
   meeting: 'ミーティング',
-  competition: '大会',
   other: 'その他',
 }
 
@@ -362,7 +360,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
             )}
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="description">詳細</Label>
+            <Label htmlFor="description">詳細（任意）</Label>
             <Textarea id="description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
           <div className="space-y-1.5">
@@ -640,7 +638,7 @@ export default function Schedule() {
           />
         )}
       </div>
-      <p className="mb-5 text-sm text-muted-foreground">クラブのイベント・練習予定を確認・参加登録できます</p>
+      <p className="mb-5 text-sm text-muted-foreground">スケジュールを確認、参加登録できます</p>
 
       <div className="mb-6 flex flex-col gap-3 sm:flex-row">
         <div className="relative flex-1">

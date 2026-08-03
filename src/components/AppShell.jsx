@@ -10,7 +10,6 @@ import {
   Megaphone,
   Menu,
   MessageSquare,
-  Settings as SettingsIcon,
   TriangleAlert,
   Users,
 } from 'lucide-react'
@@ -26,7 +25,7 @@ const MOBILE_NAV_ITEMS = [
   { to: '/schedule', label: '予定', icon: Calendar },
   { to: '/board', label: '掲示板', icon: MessageSquare },
   { to: '/tasks', label: 'タスク', icon: ListTodo },
-  { to: '/more', label: 'もっと', icon: Menu },
+  { to: '/more', label: 'その他', icon: Menu },
 ]
 
 const SIDEBAR_NAV_ITEMS = [
@@ -37,6 +36,7 @@ const SIDEBAR_NAV_ITEMS = [
   { to: '/announcements', label: 'お知らせ', icon: Megaphone },
   { to: '/resources', label: '資料', icon: FolderOpen },
   { to: '/members', label: 'メンバー', icon: Users },
+  { to: '/more', label: 'その他', icon: Menu },
 ]
 
 function SidebarLink({ to, label, icon: Icon, end, danger }) {
@@ -92,22 +92,27 @@ export default function AppShell({ user }) {
     await supabase.auth.signOut()
   }
 
-  // Personal background (set per-user in 設定 > 背景画像). Layered under a
-  // background-colored scrim at the same opacity everywhere so cards (which
-  // stay fully opaque via bg-card) remain the primary readable surface and
-  // any text sitting directly on the shell keeps enough contrast.
-  const shellStyle = backgroundUrl
+  // Personal background (set per-user in 設定 > 背景画像). Rendered as its own
+  // fixed, full-viewport layer behind everything rather than a background-*
+  // on the scrolling container -- `background-attachment: fixed` doesn't
+  // stay put on mobile Safari, so a separate `position: fixed` element is
+  // used instead to guarantee it never scrolls with the content. Layered
+  // under a background-colored scrim so cards (which stay fully opaque via
+  // bg-card) remain the primary readable surface and any text sitting
+  // directly on the shell keeps enough contrast.
+  const backgroundStyle = backgroundUrl
     ? {
-        backgroundImage: `linear-gradient(hsl(var(--background) / 0.9), hsl(var(--background) / 0.9)), url(${backgroundUrl})`,
+        backgroundImage: `linear-gradient(hsl(var(--background) / 0.75), hsl(var(--background) / 0.75)), url(${backgroundUrl})`,
         backgroundSize: 'cover',
         backgroundPosition: 'center',
-        backgroundAttachment: 'fixed',
         backgroundRepeat: 'no-repeat',
       }
     : undefined
 
   return (
-    <div className="min-h-svh md:flex" style={shellStyle}>
+    <>
+      {backgroundUrl && <div className="fixed inset-0 -z-10" style={backgroundStyle} />}
+      <div className="min-h-svh md:flex">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
         <div className="flex items-center gap-2.5 px-6 py-6">
@@ -122,7 +127,6 @@ export default function AppShell({ user }) {
             <SidebarLink key={item.to} {...item} />
           ))}
           <SidebarLink to="/emergency" label="緊急時" icon={TriangleAlert} danger />
-          {isExecutive && <SidebarLink to="/management" label="管理" icon={SettingsIcon} />}
         </nav>
 
         <div className="border-t border-border/60 p-3">
@@ -196,6 +200,7 @@ export default function AppShell({ user }) {
           ))}
         </div>
       </nav>
-    </div>
+      </div>
+    </>
   )
 }

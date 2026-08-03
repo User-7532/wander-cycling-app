@@ -16,7 +16,6 @@ import Settings from '@/pages/Settings'
 import Finance from '@/pages/Finance'
 import Resources from '@/pages/Resources'
 import AccountDirectory from '@/pages/AccountDirectory'
-import Management from '@/pages/Management'
 import SiteMap from '@/pages/SiteMap'
 import More from '@/pages/More'
 import AuthCallback from '@/pages/AuthCallback'
@@ -64,7 +63,6 @@ function App() {
           <Route path="/members" element={<Members />} />
           <Route path="/attributes" element={<Attributes />} />
           <Route path="/emergency" element={<Emergency />} />
-          <Route path="/management" element={<Management />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="/finance" element={<Finance />} />
           <Route path="/accounts" element={<AccountDirectory />} />

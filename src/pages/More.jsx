@@ -1,24 +1,36 @@
 import { Link, useOutletContext } from 'react-router-dom'
-import { Megaphone, FolderOpen, Users, TriangleAlert, Settings, ChevronRight } from 'lucide-react'
+import {
+  ChevronRight,
+  FolderOpen,
+  KeyRound,
+  Megaphone,
+  Settings as SettingsIcon,
+  Tags,
+  TriangleAlert,
+  Users,
+  Wallet,
+} from 'lucide-react'
 import { Card } from '@/components/ui/card'
 
 const ITEMS = [
   { to: '/announcements', label: 'お知らせ', icon: Megaphone },
-  { to: '/resources', label: '資料', icon: FolderOpen },
+  { to: '/resources', label: '資料・リンク集', icon: FolderOpen },
   { to: '/members', label: '部員名簿', icon: Users },
+  { to: '/settings', label: '設定', icon: SettingsIcon },
+  { to: '/attributes', label: '属性管理', icon: Tags },
+  { to: '/finance', label: '会計・会費', icon: Wallet },
   { to: '/emergency', label: '緊急連絡', icon: TriangleAlert, danger: true },
 ]
 
-const EXECUTIVE_ITEMS = [{ to: '/management', label: '管理', icon: Settings }]
+const OFFICER_ITEMS = [{ to: '/accounts', label: 'アカウント管理', icon: KeyRound }]
 
 export default function More() {
-  const { profile } = useOutletContext()
-  const isExecutive = profile?.club_roles?.tier === 'executive'
-  const items = isExecutive ? [...ITEMS, ...EXECUTIVE_ITEMS] : ITEMS
+  const { profile, isOfficerPlus } = useOutletContext()
+  const items = isOfficerPlus ? [...ITEMS, ...OFFICER_ITEMS] : ITEMS
 
   return (
     <div className="mx-auto max-w-2xl px-5 py-8">
-      <h1 className="mb-1 text-2xl font-black tracking-tight">もっと</h1>
+      <h1 className="mb-1 text-2xl font-black tracking-tight">その他</h1>
       {profile?.club_roles?.label_ja && (
         <p className="mb-6 text-sm text-muted-foreground">ログイン中: {profile.full_name}（{profile.club_roles.label_ja}）</p>
       )}

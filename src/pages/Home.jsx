@@ -24,6 +24,7 @@ function formatDueAt(value) {
 
 function greeting() {
   const h = new Date().getHours()
+  if (h < 5) return '夜ふかしですか？'
   if (h < 11) return 'おはようございます'
   if (h < 18) return 'こんにちは'
   return 'こんばんは'
@@ -32,12 +33,12 @@ function greeting() {
 function StatTile({ icon: Icon, value, label, to }) {
   return (
     <Link to={to}>
-      <Card className="p-5 transition-colors hover:border-primary/40 hover:bg-primary/5">
-        <div className="mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <Icon className="h-5 w-5" />
+      <Card className="flex flex-col items-center gap-2 p-4 text-center transition-colors hover:border-primary/40 hover:bg-primary/5">
+        <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary/10 text-primary">
+          <Icon className="h-4.5 w-4.5" />
         </div>
         <p className="text-2xl font-black tracking-tight">{value ?? '–'}</p>
-        <p className="text-sm text-muted-foreground">{label}</p>
+        <p className="whitespace-nowrap text-xs text-muted-foreground">{label}</p>
       </Card>
     </Link>
   )
@@ -49,18 +50,36 @@ export default function Home() {
   const roleLabel = profile?.club_roles?.label_ja
 
   const now = new Date().toISOString()
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).toISOString()
+  const monthEnd = new Date(new Date().getFullYear(), new Date().getMonth() + 1, 1).toISOString()
 
   const { data: events, isLoading: eventsLoading } = useQuery({
     queryKey: ['club_events', 'upcoming', 'home'],
     queryFn: async () => {
-      const { data, error, count } = await supabase
+      const { data, error } = await supabase
         .from('club_events')
-        .select('id, title, start_at, end_at, location, category', { count: 'exact' })
+        .select('id, title, start_at, end_at, location, category')
         .gte('start_at', now)
         .order('start_at', { ascending: true })
         .limit(3)
       if (error) throw error
-      return { rows: data, count }
+      return { rows: data }
+    },
+  })
+
+  // Separate from the preview list above: the dashboard tile counts events
+  // starting within the current calendar month specifically, not just "next
+  // 3 upcoming" (which could span into next month).
+  const { data: monthEventCount } = useQuery({
+    queryKey: ['club_events', 'month_count', 'home'],
+    queryFn: async () => {
+      const { count, error } = await supabase
+        .from('club_events')
+        .select('id', { count: 'exact', head: true })
+        .gte('start_at', monthStart)
+        .lt('start_at', monthEnd)
+      if (error) throw error
+      return count
     },
   })
 
@@ -114,8 +133,8 @@ export default function Home() {
       </motion.div>
 
       <div className="mb-6 grid grid-cols-3 gap-4">
-        <StatTile icon={Calendar} value={events?.count} label="直近のイベント" to="/schedule" />
-        <StatTile icon={ListTodo} value={tasks?.count} label="自分のタスク" to="/tasks" />
+        <StatTile icon={Calendar} value={monthEventCount} label="今月のイベント" to="/schedule" />
+        <StatTile icon={ListTodo} value={tasks?.count} label="タスク" to="/tasks" />
         <StatTile icon={Megaphone} value={announcements?.count} label="お知らせ" to="/announcements" />
       </div>
 
