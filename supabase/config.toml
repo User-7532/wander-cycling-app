@@ -465,3 +465,15 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/calendar-feed/deno.json"
 entrypoint = "./functions/calendar-feed/index.ts"
+
+[functions.broadcast-event-update]
+enabled = true
+verify_jwt = false
+import_map = "./functions/broadcast-event-update/deno.json"
+entrypoint = "./functions/broadcast-event-update/index.ts"
+
+[functions.notify-task-update]
+enabled = true
+verify_jwt = false
+import_map = "./functions/notify-task-update/deno.json"
+entrypoint = "./functions/notify-task-update/index.ts"
