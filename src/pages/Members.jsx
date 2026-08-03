@@ -125,13 +125,13 @@ export default function Members() {
       if (isOfficerPlus) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, full_name, email, phone, emergency_contact, avatar_url, year, status, club_role_id, club_roles(label_ja, tier, sort_order)')
+          .select('id, full_name, email, phone, emergency_contact, avatar_url, year, status, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))
       }
       const [{ data: directory, error: dirError }, { data: rolesList, error: roleError }] = await Promise.all([
         supabase.rpc('profiles_directory'),
-        supabase.from('club_roles').select('id, label_ja, sort_order'),
+        supabase.from('club_roles').select('id, label_ja, sort_order, is_yakuin, tier'),
       ])
       if (dirError) throw dirError
       if (roleError) throw roleError
@@ -153,7 +153,7 @@ export default function Members() {
     <div className="mx-auto max-w-6xl px-5 py-6 md:px-8 md:py-8">
       <h1 className="mb-1 text-2xl font-black tracking-tight">{isOfficerPlus ? 'メンバー管理' : '部員名簿'}</h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        {isOfficerPlus ? 'クラブメンバーの名簿・連絡先を管理します（役員のみ）' : '部員一覧'}
+        {isOfficerPlus ? 'クラブメンバーの名簿・連絡先を管理します（担当者以上限定）' : '部員一覧'}
       </p>
 
       <div className="relative mb-6 max-w-sm">
@@ -199,6 +199,8 @@ export default function Members() {
               </div>
               <div className="mb-3 flex flex-wrap gap-1.5">
                 {m.club_roles?.label_ja && <Badge variant="secondary">{m.club_roles.label_ja}</Badge>}
+                {m.club_roles?.is_yakuin && <Badge variant="outline">役員</Badge>}
+                {m.club_roles?.tier === 'executive' && <Badge variant="outline">アプリ管理者</Badge>}
                 {m.year && YEAR_LABEL[m.year] && <Badge variant="outline">{YEAR_LABEL[m.year]}</Badge>}
                 {m.status && m.status !== 'active' && <Badge variant="outline">{STATUS_LABEL[m.status]}</Badge>}
               </div>

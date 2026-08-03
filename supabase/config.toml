@@ -447,3 +447,15 @@ enabled = true
 verify_jwt = true
 import_map = "./functions/account-secret/deno.json"
 entrypoint = "./functions/account-secret/index.ts"
+
+[functions.broadcast-status-post]
+enabled = true
+verify_jwt = false
+import_map = "./functions/broadcast-status-post/deno.json"
+entrypoint = "./functions/broadcast-status-post/index.ts"
+
+[functions.auto-complete-task]
+enabled = true
+verify_jwt = false
+import_map = "./functions/auto-complete-task/deno.json"
+entrypoint = "./functions/auto-complete-task/index.ts"

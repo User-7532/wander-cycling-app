@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Calendar, MapPin, Pencil, Plus, Trash2, Users, UserRoundCheck } from 'lucide-react'
+import { Calendar, MapPin, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -26,6 +26,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { cn } from '@/lib/utils'
 
 const VISIBILITY_LABEL = { all: '全員', invite_only: '有志' }
 
@@ -36,6 +37,21 @@ const CATEGORY_LABEL = {
   meeting: 'ミーティング',
   competition: '大会',
   other: 'その他',
+}
+
+const CATEGORY_COLOR = {
+  gasshuku: 'bg-emerald-100 text-emerald-700 hover:bg-emerald-100',
+  practice: 'bg-blue-100 text-blue-700 hover:bg-blue-100',
+  event: 'bg-violet-100 text-violet-700 hover:bg-violet-100',
+  meeting: 'bg-slate-100 text-slate-700 hover:bg-slate-100',
+  competition: 'bg-rose-100 text-rose-700 hover:bg-rose-100',
+  other: 'bg-amber-100 text-amber-700 hover:bg-amber-100',
+}
+
+function dateBoxParts(value) {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return { month: '', day: '' }
+  return { month: d.toLocaleDateString('ja-JP', { month: 'short' }), day: d.getDate() }
 }
 
 const RSVP_OPTIONS = [
@@ -235,6 +251,8 @@ export default function Schedule() {
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
+  const [search, setSearch] = useState('')
+  const [timeFilter, setTimeFilter] = useState('upcoming')
 
   const { data: events, isLoading } = useQuery({
     queryKey: ['club_events'],
@@ -282,22 +300,54 @@ export default function Schedule() {
     return registrations?.find((r) => r.event_id === eventId && r.profile_id === user?.id)?.status
   }
 
+  const today = new Date().toISOString().slice(0, 10)
+  const filteredEvents = events
+    ?.filter((e) => {
+      if (timeFilter === 'upcoming') return e.start_date >= today
+      if (timeFilter === 'past') return e.start_date < today
+      return true
+    })
+    .filter((e) => {
+      const q = search.trim().toLowerCase()
+      if (!q) return true
+      return e.title?.toLowerCase().includes(q) || e.location?.toLowerCase().includes(q)
+    })
+
   return (
     <div className="mx-auto max-w-2xl px-5 py-8">
-      <div className="mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-black tracking-tight">予定</h1>
+      <div className="mb-1 flex items-center justify-between">
+        <h1 className="text-2xl font-black tracking-tight">スケジュール</h1>
         {isExecutive && (
           <EventFormDialog
             mode="create"
             open={createOpen}
             onOpenChange={setCreateOpen}
             trigger={
-              <Button size="icon" className="h-10 w-10 rounded-full">
-                <Plus className="h-5 w-5" />
+              <Button size="sm" className="rounded-full">
+                <Plus className="h-4 w-4" />
+                イベント追加
               </Button>
             }
           />
         )}
+      </div>
+      <p className="mb-5 text-sm text-muted-foreground">クラブのイベント・練習予定を確認・参加登録できます</p>
+
+      <div className="mb-6 flex flex-col gap-3 sm:flex-row">
+        <div className="relative flex-1">
+          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input placeholder="タイトル・場所で検索..." value={search} onChange={(e) => setSearch(e.target.value)} className="pl-9" />
+        </div>
+        <Select value={timeFilter} onValueChange={setTimeFilter}>
+          <SelectTrigger className="sm:w-40">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="upcoming">今後の予定</SelectItem>
+            <SelectItem value="past">過去の予定</SelectItem>
+            <SelectItem value="all">すべて</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
 
       {isLoading && (
@@ -307,79 +357,91 @@ export default function Schedule() {
         </div>
       )}
 
-      {!isLoading && (!events || events.length === 0) && (
+      {!isLoading && (!filteredEvents || filteredEvents.length === 0) && (
         <Card className="flex flex-col items-center justify-center gap-2 border-dashed py-12 text-center">
           <Calendar className="h-8 w-8 text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">予定はまだ登録されていません</p>
+          <p className="text-sm text-muted-foreground">該当する予定はありません</p>
         </Card>
       )}
 
       <div className="space-y-3">
-        {events?.map((e, i) => {
+        {filteredEvents?.map((e, i) => {
           const selected = myStatus(e.id)
+          const { month, day } = dateBoxParts(e.start_date)
           return (
             <motion.div key={e.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
               <Card className="p-5">
-                <div className="mb-2 flex items-start justify-between gap-2">
-                  <h3 className="font-bold">{e.title}</h3>
-                  <div className="flex shrink-0 items-center gap-1.5">
-                    {e.visibility === 'invite_only' && (
-                      <Badge variant="secondary" className="gap-1">
-                        <UserRoundCheck className="h-3 w-3" />
-                        {VISIBILITY_LABEL.invite_only}
-                      </Badge>
-                    )}
-                    <Badge variant="outline">{CATEGORY_LABEL[e.category] || e.category}</Badge>
-                    {isExecutive && (
-                      <>
-                        <button onClick={() => setEditing(e)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm('この予定を削除しますか？')) remove.mutate(e.id)
-                          }}
-                          className="text-muted-foreground transition-colors hover:text-destructive"
-                          aria-label="削除"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </>
-                    )}
+                <div className="flex gap-4">
+                  <div className="flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-2xl bg-primary/10 text-primary">
+                    <span className="text-xs font-medium">{month}</span>
+                    <span className="text-2xl font-black leading-none">{day}</span>
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1 flex items-start justify-between gap-2">
+                      <h3 className="font-bold">{e.title}</h3>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {e.visibility === 'invite_only' && (
+                          <Badge variant="secondary" className="gap-1">
+                            <UserRoundCheck className="h-3 w-3" />
+                            {VISIBILITY_LABEL.invite_only}
+                          </Badge>
+                        )}
+                        <Badge className={cn('border-none', CATEGORY_COLOR[e.category] || CATEGORY_COLOR.other)}>
+                          {CATEGORY_LABEL[e.category] || e.category}
+                        </Badge>
+                        {isExecutive && (
+                          <>
+                            <button onClick={() => setEditing(e)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
+                              <Pencil className="h-3.5 w-3.5" />
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (confirm('この予定を削除しますか？')) remove.mutate(e.id)
+                              }}
+                              className="text-muted-foreground transition-colors hover:text-destructive"
+                              aria-label="削除"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </div>
+                    {e.description && <p className="mb-1.5 text-sm text-muted-foreground">{e.description}</p>}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
+                      {e.location && (
+                        <span className="flex items-center gap-1">
+                          <MapPin className="h-3.5 w-3.5" />
+                          {e.location}
+                        </span>
+                      )}
+                      <span className="flex items-center gap-1">
+                        <Calendar className="h-3.5 w-3.5" />
+                        {formatDate(e.start_date)}
+                        {e.end_date && e.end_date !== e.start_date ? ` 〜 ${formatDate(e.end_date)}` : ''}
+                      </span>
+                      <span className="flex items-center gap-1">
+                        <Users className="h-3.5 w-3.5" />
+                        参加 {attendingCount(e.id)}人
+                      </span>
+                    </div>
                   </div>
                 </div>
-                {e.description && <p className="mb-2 text-sm text-muted-foreground">{e.description}</p>}
-                <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-muted-foreground">
-                  {e.location && (
-                    <span className="flex items-center gap-1">
-                      <MapPin className="h-3.5 w-3.5" />
-                      {e.location}
-                    </span>
-                  )}
-                  <span className="flex items-center gap-1">
-                    <Calendar className="h-3.5 w-3.5" />
-                    {formatDate(e.start_date)}
-                    {e.end_date && e.end_date !== e.start_date ? ` 〜 ${formatDate(e.end_date)}` : ''}
-                  </span>
-                  <span className="flex items-center gap-1">
-                    <Users className="h-3.5 w-3.5" />
-                    参加 {attendingCount(e.id)}人
-                  </span>
-                </div>
-                <div className="mt-4 flex gap-2">
-                  {RSVP_OPTIONS.map((opt) => (
-                    <Button
-                      key={opt.value}
-                      type="button"
-                      size="sm"
-                      variant={selected === opt.value ? 'default' : 'outline'}
-                      onClick={() => rsvp.mutate({ eventId: e.id, status: opt.value })}
-                    >
-                      {opt.label}
-                    </Button>
-                  ))}
-                </div>
               </Card>
+              <div className="mt-2 flex items-center gap-2 px-1 text-xs text-muted-foreground">
+                参加登録:
+                {RSVP_OPTIONS.map((opt) => (
+                  <Button
+                    key={opt.value}
+                    type="button"
+                    size="sm"
+                    variant={selected === opt.value ? 'default' : 'outline'}
+                    onClick={() => rsvp.mutate({ eventId: e.id, status: opt.value })}
+                  >
+                    {opt.label}
+                  </Button>
+                ))}
+              </div>
             </motion.div>
           )
         })}

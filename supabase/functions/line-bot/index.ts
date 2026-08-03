@@ -85,12 +85,25 @@ const BASE_TOOLS = [
       required: ['message'],
     },
   },
+  {
+    name: 'save_glossary_term',
+    description:
+      '部内で使われている独自の言葉・略語・ネタ・言い回しを新しく知ったときに、意味と一緒に記録しておく（次回以降の会話で使えるように）。雑談の中で自然に出てきた場合に使う。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        term: { type: 'string', description: '言葉・フレーズ' },
+        definition: { type: 'string', description: 'その意味・使われ方の説明' },
+      },
+      required: ['term', 'definition'],
+    },
+  },
 ]
 
 const EXECUTIVE_TOOLS = [
   {
     name: 'create_event',
-    description: '新しい予定（合宿・練習・イベントなど）を作成する（執行部のみ実行可能）',
+    description: '新しい予定（合宿・練習・イベントなど）を作成する（アプリ管理者のみ実行可能）',
     input_schema: {
       type: 'object',
       properties: {
@@ -115,7 +128,7 @@ const EXECUTIVE_TOOLS = [
   },
   {
     name: 'create_task',
-    description: '部員にタスクを割り当てる（執行部のみ実行可能）',
+    description: '部員にタスクを割り当てる（アプリ管理者のみ実行可能）',
     input_schema: {
       type: 'object',
       properties: {
@@ -129,7 +142,7 @@ const EXECUTIVE_TOOLS = [
   },
   {
     name: 'create_announcement',
-    description: 'お知らせを投稿する（執行部のみ実行可能）',
+    description: 'お知らせを投稿する（アプリ管理者のみ実行可能）',
     input_schema: {
       type: 'object',
       properties: { title: { type: 'string' }, body: { type: 'string' } },
@@ -224,8 +237,16 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     return { ok: true }
   }
 
+  if (name === 'save_glossary_term') {
+    const { error } = await supabase
+      .from('club_glossary')
+      .upsert({ term: input.term, definition: input.definition, added_by: ctx.profileId }, { onConflict: 'term' })
+    if (error) return { error: error.message }
+    return { ok: true }
+  }
+
   if (name === 'create_event') {
-    if (ctx.tier !== 'executive') return { error: '権限がありません（執行部のみ実行できます）' }
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
     const visibility = input.visibility === 'invite_only' ? 'invite_only' : 'all'
     const { data: event, error } = await supabase
       .from('club_events')
@@ -257,7 +278,7 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
   }
 
   if (name === 'create_task') {
-    if (ctx.tier !== 'executive') return { error: '権限がありません（執行部のみ実行できます）' }
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
     const assignee = await findMemberByName(input.assignee_name_query as string)
     if (!assignee) return { error: '該当する部員が見つかりませんでした' }
     const { error } = await supabase.from('tasks').insert({
@@ -272,7 +293,7 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
   }
 
   if (name === 'create_announcement') {
-    if (ctx.tier !== 'executive') return { error: '権限がありません（執行部のみ実行できます）' }
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
     const { error } = await supabase.from('announcements').insert({ title: input.title, body: input.body, created_by: ctx.profileId })
     if (error) return { error: error.message }
     return { ok: true }
@@ -302,11 +323,14 @@ async function callClaude(system: string, messages: unknown[], tools: unknown[],
 async function runAssistant(
   userText: string,
   history: { role: string; content: unknown }[],
-  ctx: { profileId: string; tier: string; callerName: string; callerRole: string; persona: string },
+  ctx: { profileId: string; tier: string; callerName: string; callerRole: string; persona: string; glossary: { term: string; definition: string }[] },
   apiKey: string
 ) {
   const tools = ctx.tier === 'executive' ? [...BASE_TOOLS, ...EXECUTIVE_TOOLS] : BASE_TOOLS
-  const system = `${ctx.persona}\n\n[話しかけている部員の情報]\n名前: ${ctx.callerName}\n役職: ${ctx.callerRole}\n権限区分: ${ctx.tier}\n今日の日付: ${new Date().toISOString().slice(0, 10)}\nこの情報は事実として使ってよいが、部員本人に「あなたは○○さんですね」のように毎回確認する必要はない。\n\n重要: 返信には、ツールの実行結果に含まれる内容だけを書いてください。実行していない操作（呼び出していないツール）の結果を、あたかも実行したかのように書いてはいけません。複数の依頼のうち一部しか実行できなかった場合は、実行できた分とできなかった分を正直に分けて伝えてください。`
+  const glossaryText = ctx.glossary.length
+    ? `\n\n[部内用語集 — これまでの会話で学んだ言葉]\n${ctx.glossary.map((g) => `・${g.term}: ${g.definition}`).join('\n')}`
+    : ''
+  const system = `${ctx.persona}\n\n[話しかけている部員の情報]\n名前: ${ctx.callerName}\n役職: ${ctx.callerRole}\n権限区分: ${ctx.tier}\n今日の日付: ${new Date().toISOString().slice(0, 10)}\nこの情報は事実として使ってよいが、部員本人に「あなたは○○さんですね」のように毎回確認する必要はない。${glossaryText}\n\n重要: ツール呼び出しが必要な用件だけでなく、雑談・しりとりなどの言葉遊び・ちょっとした相談にも普通に応じてよい。「秘書だからできない」のように用件外だからと安易に断らないこと。ただし、返信の中で事実として述べる内容（予定・タスク・部員情報など）は、ツールの実行結果に含まれるものだけにすること。実行していない操作をあたかも実行したかのように書いてはいけない。複数の依頼のうち一部しか実行できなかった場合は、実行できた分とできなかった分を正直に分けて伝えること。会話の中で部内だけで通じる言葉・ネタ・言い回しに気づいたら、save_glossary_termで記録しておくとよい。`
   const messages = [...history, { role: 'user', content: userText }]
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -349,6 +373,8 @@ serve(async (req) => {
 
   const { data: personaSetting } = await supabase.from('app_settings').select('value').eq('key', 'ai_secretary_persona').maybeSingle()
   const persona = personaSetting?.value || DEFAULT_PERSONA
+  const { data: glossaryRows } = await supabase.from('club_glossary').select('term, definition').order('created_at', { ascending: false }).limit(50)
+  const glossary = glossaryRows ?? []
 
   for (const event of body.events ?? []) {
     if (event.type !== 'message' || event.message?.type !== 'text') continue
@@ -378,6 +404,7 @@ serve(async (req) => {
         callerName: profile.full_name,
         callerRole: profile.club_roles?.label_ja ?? '一般部員',
         persona,
+        glossary,
       }
 
       let { data: conversation } = await supabase

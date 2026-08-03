@@ -37,12 +37,16 @@
 
   html {
     scroll-behavior: smooth;
+    height: 100%;
+    overscroll-behavior-y: none;
   }
 
   body {
     @apply bg-background text-foreground font-sans;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    min-height: 100%;
+    overscroll-behavior-y: none;
   }
 
   #root {

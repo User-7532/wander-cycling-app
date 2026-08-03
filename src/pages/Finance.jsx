@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Banknote, CircleCheck, CircleDollarSign, Pencil, Plus, Trash2, Wallet } from 'lucide-react'
+import { Banknote, Camera, CircleCheck, CircleDollarSign, Pencil, Plus, Receipt, Trash2, Wallet } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -16,6 +16,8 @@ import { cn } from '@/lib/utils'
 
 const DIRECTION_LABEL = { income: '収入', expense: '支出' }
 const EMPTY_RECORD = { entry_date: '', direction: 'expense', category: '', amount_jpy: '', description: '' }
+const REIMBURSEMENT_STATUS_LABEL = { pending: '審査待ち', approved: '承認済み', paid: '支払済み', rejected: '却下' }
+const REIMBURSEMENT_STATUS_VARIANT = { pending: 'outline', approved: 'secondary', paid: 'default', rejected: 'outline' }
 
 function RecordFormDialog({ mode, record, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(
@@ -341,11 +343,259 @@ function MyFeeStatus({ user }) {
   )
 }
 
+function ReceiptLink({ path }) {
+  const [loading, setLoading] = useState(false)
+
+  async function open() {
+    setLoading(true)
+    const { data, error } = await supabase.storage.from('receipts').createSignedUrl(path, 60)
+    setLoading(false)
+    if (error) {
+      toast.error('領収書の取得に失敗しました')
+      return
+    }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <button type="button" onClick={open} disabled={loading} className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+      <Receipt className="h-3.5 w-3.5" />
+      領収書を見る
+    </button>
+  )
+}
+
+function SubmitReimbursementDialog({ userId, trigger, open, onOpenChange }) {
+  const [amount, setAmount] = useState('')
+  const [description, setDescription] = useState('')
+  const [file, setFile] = useState(null)
+  const queryClient = useQueryClient()
+
+  const submit = useMutation({
+    mutationFn: async () => {
+      let receiptPath = null
+      if (file) {
+        receiptPath = `${userId}/${Date.now()}-${file.name}`
+        const { error: uploadError } = await supabase.storage.from('receipts').upload(receiptPath, file)
+        if (uploadError) throw uploadError
+      }
+      const { error } = await supabase
+        .from('reimbursement_requests')
+        .insert({ submitted_by: userId, amount_jpy: Number(amount), description, receipt_path: receiptPath })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('立替払いを申請しました')
+      queryClient.invalidateQueries({ queryKey: ['reimbursement_requests'] })
+      setAmount('')
+      setDescription('')
+      setFile(null)
+      onOpenChange(false)
+    },
+    onError: (err) => toast.error(`申請に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>立替払いを申請</DialogTitle>
+        </DialogHeader>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            submit.mutate()
+          }}
+          className="space-y-3"
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="r-amount">金額（円）</Label>
+            <Input id="r-amount" type="number" required min="0" value={amount} onChange={(e) => setAmount(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="r-desc">内容</Label>
+            <Input id="r-desc" required placeholder="例: 合宿の食材費" value={description} onChange={(e) => setDescription(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="r-receipt">領収書の写真（任意）</Label>
+            <label
+              htmlFor="r-receipt"
+              className="flex h-24 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-input text-xs text-muted-foreground hover:bg-muted/50"
+            >
+              <Camera className="h-5 w-5" />
+              {file ? file.name : 'タップして写真を選択'}
+            </label>
+            <input id="r-receipt" type="file" accept="image/*" className="hidden" onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
+          </div>
+          <Button type="submit" className="w-full" disabled={submit.isPending}>
+            申請する
+          </Button>
+        </form>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function MyReimbursements({ userId }) {
+  const [createOpen, setCreateOpen] = useState(false)
+
+  const { data: requests, isLoading } = useQuery({
+    queryKey: ['reimbursement_requests', 'mine', userId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('reimbursement_requests')
+        .select('*')
+        .eq('submitted_by', userId)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return data
+    },
+    enabled: !!userId,
+  })
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-lg font-bold">
+          <Receipt className="h-5 w-5 text-primary" />
+          立替払い
+        </h2>
+        <SubmitReimbursementDialog
+          userId={userId}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          trigger={
+            <Button size="sm">
+              <Plus className="h-4 w-4" />
+              申請する
+            </Button>
+          }
+        />
+      </div>
+
+      {isLoading && <Skeleton className="h-16 w-full" />}
+      {!isLoading && (!requests || requests.length === 0) && (
+        <Card className="border-dashed p-8 text-center text-sm text-muted-foreground">まだ申請はありません</Card>
+      )}
+      <div className="space-y-2">
+        {requests?.map((r) => (
+          <Card key={r.id} className="px-4 py-3">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <p className="text-sm font-bold">{r.description}</p>
+              <Badge variant={REIMBURSEMENT_STATUS_VARIANT[r.status]}>{REIMBURSEMENT_STATUS_LABEL[r.status]}</Badge>
+            </div>
+            <div className="flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">¥{r.amount_jpy.toLocaleString()}</p>
+              {r.receipt_path && <ReceiptLink path={r.receipt_path} />}
+            </div>
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function ReimbursementAdmin({ userId }) {
+  const [createOpen, setCreateOpen] = useState(false)
+  const queryClient = useQueryClient()
+
+  const { data: requests, isLoading } = useQuery({
+    queryKey: ['reimbursement_requests', 'all'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('reimbursement_requests')
+        .select('*, submitter:profiles!reimbursement_requests_submitted_by_fkey(full_name)')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      return data
+    },
+  })
+
+  const updateStatus = useMutation({
+    mutationFn: async ({ id, status }) => {
+      const { error } = await supabase
+        .from('reimbursement_requests')
+        .update({ status, reviewed_by: userId, reviewed_at: new Date().toISOString() })
+        .eq('id', id)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['reimbursement_requests'] }),
+    onError: (err) => toast.error(`更新に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <div>
+      <div className="mb-3 flex items-center justify-between">
+        <p className="text-sm text-muted-foreground">部員からの立替払い申請を確認・処理します</p>
+        <SubmitReimbursementDialog
+          userId={userId}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+          trigger={
+            <Button size="sm" variant="outline">
+              <Plus className="h-4 w-4" />
+              自分も申請する
+            </Button>
+          }
+        />
+      </div>
+
+      {isLoading && <Skeleton className="h-16 w-full" />}
+      {!isLoading && (!requests || requests.length === 0) && (
+        <Card className="border-dashed p-8 text-center text-sm text-muted-foreground">まだ申請はありません</Card>
+      )}
+      <div className="space-y-2">
+        {requests?.map((r) => (
+          <Card key={r.id} className="px-4 py-3">
+            <div className="mb-1 flex items-center justify-between gap-2">
+              <p className="text-sm font-bold">
+                {r.submitter?.full_name} ・ {r.description}
+              </p>
+              <Badge variant={REIMBURSEMENT_STATUS_VARIANT[r.status]}>{REIMBURSEMENT_STATUS_LABEL[r.status]}</Badge>
+            </div>
+            <div className="mb-2 flex items-center justify-between">
+              <p className="text-xs text-muted-foreground">¥{r.amount_jpy.toLocaleString()}</p>
+              {r.receipt_path && <ReceiptLink path={r.receipt_path} />}
+            </div>
+            {r.status !== 'paid' && (
+              <div className="flex gap-2">
+                {r.status === 'pending' && (
+                  <>
+                    <Button size="sm" variant="outline" onClick={() => updateStatus.mutate({ id: r.id, status: 'approved' })}>
+                      承認
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => updateStatus.mutate({ id: r.id, status: 'rejected' })}>
+                      却下
+                    </Button>
+                  </>
+                )}
+                {r.status === 'approved' && (
+                  <Button size="sm" onClick={() => updateStatus.mutate({ id: r.id, status: 'paid' })}>
+                    支払済みにする
+                  </Button>
+                )}
+              </div>
+            )}
+          </Card>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export default function Finance() {
   const { user, isExecutive } = useOutletContext()
   const [tab, setTab] = useState('ledger')
 
-  if (!isExecutive) return <MyFeeStatus user={user} />
+  if (!isExecutive) {
+    return (
+      <div className="mx-auto max-w-2xl space-y-8 px-5 py-8">
+        <MyFeeStatus user={user} />
+        <MyReimbursements userId={user.id} />
+      </div>
+    )
+  }
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">
@@ -353,7 +603,7 @@ export default function Finance() {
         <Banknote className="h-6 w-6 text-primary" />
         会計・会費
       </h1>
-      <p className="mb-6 text-sm text-muted-foreground">執行部限定の会計管理ページ</p>
+      <p className="mb-6 text-sm text-muted-foreground">アプリ管理者限定の会計管理ページ</p>
 
       <div className="mb-4 flex gap-2">
         <Button size="sm" variant={tab === 'ledger' ? 'default' : 'outline'} onClick={() => setTab('ledger')}>
@@ -362,9 +612,14 @@ export default function Finance() {
         <Button size="sm" variant={tab === 'fees' ? 'default' : 'outline'} onClick={() => setTab('fees')}>
           会費
         </Button>
+        <Button size="sm" variant={tab === 'reimbursement' ? 'default' : 'outline'} onClick={() => setTab('reimbursement')}>
+          立替払い
+        </Button>
       </div>
 
-      {tab === 'ledger' ? <FinancialLedger /> : <MembershipFeesAdmin />}
+      {tab === 'ledger' && <FinancialLedger />}
+      {tab === 'fees' && <MembershipFeesAdmin />}
+      {tab === 'reimbursement' && <ReimbursementAdmin userId={user.id} />}
     </div>
   )
 }

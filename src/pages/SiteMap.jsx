@@ -30,7 +30,7 @@ const SECTIONS = [
 ]
 
 const EXECUTIVE_SECTION = {
-  title: '執行部向け（管理）',
+  title: 'アプリ管理者向け（管理）',
   items: [
     { to: '/finance', label: '会計・会費', icon: Wallet, desc: '収支の記録、会費の管理' },
     { to: '/accounts', label: 'アカウント管理', icon: KeyRound, desc: '部で使うサービスの共有ログイン情報' },

@@ -46,7 +46,7 @@ export default function Settings() {
   if (!isExecutive) {
     return (
       <div className="mx-auto max-w-2xl px-5 py-8">
-        <Card className="border-dashed p-8 text-center text-sm text-muted-foreground">この設定は執行部のみ閲覧できます</Card>
+        <Card className="border-dashed p-8 text-center text-sm text-muted-foreground">この設定はアプリ管理者のみ閲覧できます</Card>
       </div>
     )
   }

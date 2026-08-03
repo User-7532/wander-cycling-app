@@ -51,7 +51,7 @@ serve(async (req) => {
     }
 
     if (body.action === 'set') {
-      if (!isExecutive) return new Response(JSON.stringify({ error: '権限がありません（執行部のみ）' }), { status: 403, headers: corsHeaders })
+      if (!isExecutive) return new Response(JSON.stringify({ error: '権限がありません（アプリ管理者のみ）' }), { status: 403, headers: corsHeaders })
 
       let entryId = body.entry_id
       let vaultSecretId = null
@@ -77,6 +77,7 @@ serve(async (req) => {
         notes: body.notes || null,
         min_tier: body.min_tier || 'officer',
         vault_secret_id: vaultSecretId,
+        verification_contact: body.verification_contact || null,
         created_by: user.id,
         updated_at: new Date().toISOString(),
       }

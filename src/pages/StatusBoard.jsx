@@ -8,6 +8,7 @@ import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 import {
   Select,
@@ -41,6 +42,7 @@ export default function StatusBoard() {
   const queryClient = useQueryClient()
   const [message, setMessage] = useState('')
   const [category, setCategory] = useState('status')
+  const [customCategory, setCustomCategory] = useState('')
 
   const { data: posts, isLoading } = useQuery({
     queryKey: ['status_posts'],
@@ -71,11 +73,13 @@ export default function StatusBoard() {
 
   const post = useMutation({
     mutationFn: async () => {
-      const { error } = await supabase.from('status_posts').insert({ message, category, author_id: user.id })
+      const finalCategory = category === 'other' && customCategory.trim() ? customCategory.trim() : category
+      const { error } = await supabase.from('status_posts').insert({ message, category: finalCategory, author_id: user.id })
       if (error) throw error
     },
     onSuccess: () => {
       setMessage('')
+      setCustomCategory('')
       queryClient.invalidateQueries({ queryKey: ['status_posts'] })
     },
     onError: (err) => toast.error(`投稿に失敗しました: ${err.message}`),
@@ -109,7 +113,7 @@ export default function StatusBoard() {
             rows={2}
             className="w-full resize-none rounded-xl border border-input bg-white/70 px-4 py-2.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Select value={category} onValueChange={setCategory}>
               <SelectTrigger className="w-40">
                 <SelectValue />
@@ -122,6 +126,14 @@ export default function StatusBoard() {
                 ))}
               </SelectContent>
             </Select>
+            {category === 'other' && (
+              <Input
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                placeholder="属性名を入力"
+                className="w-32"
+              />
+            )}
             <Button type="submit" size="sm" className="ml-auto" disabled={post.isPending || !message.trim()}>
               <Send className="h-3.5 w-3.5" />
               投稿

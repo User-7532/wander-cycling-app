@@ -7,7 +7,7 @@ export function useProfile(userId) {
     queryFn: async () => {
       const { data, error } = await supabase
         .from('profiles')
-        .select('*, club_roles(label_ja, tier)')
+        .select('*, club_roles(label_ja, tier, is_yakuin)')
         .eq('id', userId)
         .single()
       if (error) throw error

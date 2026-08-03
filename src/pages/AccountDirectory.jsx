@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Copy, Eye, EyeOff, KeyRound, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Copy, Eye, EyeOff, KeyRound, Pencil, Plus, Trash2, TriangleAlert } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -14,8 +14,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 
-const MIN_TIER_LABEL = { officer: '役員以上', executive: '執行部のみ' }
-const EMPTY_FORM = { service_name: '', login_id: '', notes: '', min_tier: 'officer', secret_value: '' }
+const MIN_TIER_LABEL = { officer: '担当者以上', executive: 'アプリ管理者のみ' }
+const EMPTY_FORM = { service_name: '', login_id: '', notes: '', min_tier: 'officer', secret_value: '', verification_contact: '' }
 
 function EntryFormDialog({ mode, entry, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(mode === 'edit' ? { ...entry, secret_value: '' } : EMPTY_FORM)
@@ -32,6 +32,7 @@ function EntryFormDialog({ mode, entry, trigger, open, onOpenChange }) {
           notes: form.notes,
           min_tier: form.min_tier,
           secret_value: form.secret_value || undefined,
+          verification_contact: form.verification_contact,
         },
       })
       if (error) throw error
@@ -72,14 +73,23 @@ function EntryFormDialog({ mode, entry, trigger, open, onOpenChange }) {
             <Input id="s-secret" type="password" value={form.secret_value} onChange={(e) => setForm({ ...form, secret_value: e.target.value })} />
           </div>
           <div className="space-y-1.5">
+            <Label htmlFor="s-verify">認証先メール / 電話番号（2段階認証・復旧用、任意）</Label>
+            <Input
+              id="s-verify"
+              value={form.verification_contact || ''}
+              onChange={(e) => setForm({ ...form, verification_contact: e.target.value })}
+              placeholder="例: 部のGmail、または個人の携帯番号"
+            />
+          </div>
+          <div className="space-y-1.5">
             <Label>閲覧できる範囲</Label>
             <Select value={form.min_tier} onValueChange={(v) => setForm({ ...form, min_tier: v })}>
               <SelectTrigger>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="officer">役員以上</SelectItem>
-                <SelectItem value="executive">執行部のみ</SelectItem>
+                <SelectItem value="officer">担当者以上</SelectItem>
+                <SelectItem value="executive">アプリ管理者のみ</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -170,7 +180,7 @@ export default function AccountDirectory() {
             <KeyRound className="h-6 w-6 text-primary" />
             アカウント管理
           </h1>
-          <p className="text-sm text-muted-foreground">部で使うサービスの共有ログイン情報（役員以上限定）</p>
+          <p className="text-sm text-muted-foreground">部で使うサービスの共有ログイン情報（担当者以上限定）</p>
         </div>
         {isExecutive && (
           <EntryFormDialog
@@ -192,37 +202,54 @@ export default function AccountDirectory() {
       )}
 
       <div className="space-y-3">
-        {entries?.map((e) => (
-          <Card key={e.id} className="p-4">
-            <div className="mb-1 flex items-start justify-between gap-2">
-              <div>
-                <p className="font-bold">{e.service_name}</p>
-                {e.login_id && <p className="text-xs text-muted-foreground">{e.login_id}</p>}
+        {entries?.map((e) => {
+          const knownContacts = (entries ?? [])
+            .filter((other) => other.id !== e.id && other.login_id)
+            .map((other) => other.login_id.trim().toLowerCase())
+          const contact = e.verification_contact?.trim().toLowerCase()
+          const isPersonalContact = contact && !knownContacts.includes(contact)
+
+          return (
+            <Card key={e.id} className="p-4">
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <div>
+                  <p className="font-bold">{e.service_name}</p>
+                  {e.login_id && <p className="text-xs text-muted-foreground">{e.login_id}</p>}
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <Badge variant="outline">{MIN_TIER_LABEL[e.min_tier]}</Badge>
+                  {isExecutive && (
+                    <>
+                      <button onClick={() => setEditing(e)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (confirm('このアカウント情報を削除しますか？')) remove.mutate(e.id)
+                        }}
+                        className="text-muted-foreground transition-colors hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-1.5">
-                <Badge variant="outline">{MIN_TIER_LABEL[e.min_tier]}</Badge>
-                {isExecutive && (
-                  <>
-                    <button onClick={() => setEditing(e)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
-                      <Pencil className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (confirm('このアカウント情報を削除しますか？')) remove.mutate(e.id)
-                      }}
-                      className="text-muted-foreground transition-colors hover:text-destructive"
-                      aria-label="削除"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-            {e.notes && <p className="text-xs text-muted-foreground">{e.notes}</p>}
-            <RevealButton entryId={e.id} />
-          </Card>
-        ))}
+              {e.notes && <p className="mb-1 text-xs text-muted-foreground">{e.notes}</p>}
+              {e.verification_contact && (
+                <p className="mb-1 text-xs text-muted-foreground">認証先: {e.verification_contact}</p>
+              )}
+              {isPersonalContact && (
+                <div className="mb-1 flex items-center gap-1 text-xs font-medium text-amber-600">
+                  <TriangleAlert className="h-3.5 w-3.5" />
+                  この認証先は部で管理されていない個人のアカウントの可能性があります
+                </div>
+              )}
+              <RevealButton entryId={e.id} />
+            </Card>
+          )
+        })}
       </div>
 
       {editing && <EntryFormDialog mode="edit" entry={editing} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />}

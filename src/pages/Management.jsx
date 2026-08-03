@@ -12,7 +12,7 @@ export default function Management() {
   return (
     <div className="mx-auto max-w-2xl px-5 py-8">
       <h1 className="mb-1 text-2xl font-black tracking-tight">管理</h1>
-      <p className="mb-6 text-sm text-muted-foreground">執行部向けの管理機能</p>
+      <p className="mb-6 text-sm text-muted-foreground">アプリ管理者向けの管理機能</p>
 
       <Card className="divide-y overflow-hidden p-0">
         {ITEMS.map(({ to, label, icon: Icon }) => (
