@@ -103,13 +103,21 @@ const BASE_TOOLS = [
 const EXECUTIVE_TOOLS = [
   {
     name: 'create_event',
-    description: '新しい予定（合宿・練習・イベントなど）を作成する（アプリ管理者のみ実行可能）',
+    description:
+      '新しい予定（合宿・練習・イベントなど）を作成する（アプリ管理者のみ実行可能）。重要: ユーザーのメッセージに集合時間（何時集合か）が明記されていない場合は、このツールを絶対に呼び出さないこと。start_atに0:00や現在時刻などを勝手に補完して呼び出してはいけない。その場合は先に「集合時間は何時ですか？」と本人にプレーンテキストで質問し、回答が来るまでツールを実行しないこと。',
     input_schema: {
       type: 'object',
       properties: {
         title: { type: 'string' },
-        start_date: { type: 'string', description: 'YYYY-MM-DD形式' },
-        end_date: { type: 'string', description: 'YYYY-MM-DD形式、任意' },
+        start_at: {
+          type: 'string',
+          description:
+            '集合時間（分単位の日時、必須）。"YYYY-MM-DD HH:mm"形式で指定する（例: "2026-08-10 08:00"）。ユーザーが時刻を言っていない場合、このフィールドを埋めるためにこのツールを呼び出してはいけない。',
+        },
+        end_at: {
+          type: 'string',
+          description: '終了日時、任意。"YYYY-MM-DD HH:mm"形式（例: "2026-08-11 15:00"）。',
+        },
         location: { type: 'string' },
         category: { type: 'string', enum: ['gasshuku', 'practice', 'event', 'meeting', 'competition', 'other'] },
         visibility: {
@@ -123,18 +131,23 @@ const EXECUTIVE_TOOLS = [
           description: 'visibilityがinvite_onlyのとき、参加できるメンバーの名前（部分一致）のリスト',
         },
       },
-      required: ['title', 'start_date'],
+      required: ['title', 'start_at'],
     },
   },
   {
     name: 'create_task',
-    description: '部員にタスクを割り当てる（アプリ管理者のみ実行可能）',
+    description:
+      '部員にタスクを割り当てる（アプリ管理者のみ実行可能）。締め切りは任意項目だが、ユーザーが締め切りに言及したのに具体的な日時（時刻含む）を言っていない場合は、due_atを0:00などで勝手に補完せず、先に本人に確認すること。締め切りの話が一切ない場合はdue_atを省略してよい。',
     input_schema: {
       type: 'object',
       properties: {
         title: { type: 'string' },
         assignee_name_query: { type: 'string', description: '担当者の名前（部分一致）' },
-        due_date: { type: 'string', description: 'YYYY-MM-DD形式、任意' },
+        due_at: {
+          type: 'string',
+          description:
+            '締め切り日時、任意。"YYYY-MM-DD HH:mm"形式（例: "2026-08-10 23:59"）。ユーザーの依頼に締め切り時刻が含まれていない場合は、時刻を勝手に0:00などとして補完せず、本人に確認すること。',
+        },
         priority: { type: 'string', enum: ['low', 'medium', 'high'] },
       },
       required: ['title', 'assignee_name_query'],
@@ -158,6 +171,36 @@ function normalizeName(s: string) {
   return s.replace(/[\s　]+/g, '').toLowerCase()
 }
 
+// The create_event/create_task tools ask the model for "YYYY-MM-DD HH:mm"
+// (assumed to be JST, since that's the only timezone this club operates in)
+// and we append the +09:00 offset ourselves before writing to a timestamptz
+// column, rather than trusting Postgres to guess the session timezone.
+function jstDateTimeToIso(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null
+  const trimmed = value.trim()
+  const match = trimmed.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?/)
+  if (!match) return null
+  return `${match[1]}T${match[2]}:00+09:00`
+}
+
+// For presenting timestamptz values back to the model/user in JST, so the
+// bot doesn't accidentally read out a UTC hour as if it were local time.
+function isoToJstDisplay(value: string | null): string | null {
+  if (!value) return null
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return value
+  const parts = new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(d)
+  return parts.replace(' ', 'T')
+}
+
 async function findMemberByName(query: string) {
   const { data } = await supabase.from('profiles').select('id, full_name')
   const normQuery = normalizeName(query)
@@ -170,11 +213,12 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     // service-role client bypasses RLS: mirror the same visibility rule by hand.
     const { data } = await supabase
       .from('club_events')
-      .select('id, title, start_date, end_date, location, visibility')
-      .gte('start_date', new Date().toISOString().slice(0, 10))
-      .order('start_date')
+      .select('id, title, start_at, end_at, location, visibility')
+      .gte('start_at', new Date().toISOString())
+      .order('start_at')
       .limit(10)
-    if (ctx.tier === 'executive' || ctx.tier === 'officer') return data ?? []
+    const formatted = (data ?? []).map((e) => ({ ...e, start_at: isoToJstDisplay(e.start_at), end_at: isoToJstDisplay(e.end_at) }))
+    if (ctx.tier === 'executive' || ctx.tier === 'officer') return formatted
     const invited = new Set(
       (
         await supabase
@@ -183,17 +227,17 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
           .eq('profile_id', ctx.profileId)
       ).data?.map((r) => r.event_id) ?? []
     )
-    return (data ?? []).filter((e) => e.visibility === 'all' || invited.has(e.id)).slice(0, 5)
+    return formatted.filter((e) => e.visibility === 'all' || invited.has(e.id)).slice(0, 5)
   }
 
   if (name === 'get_my_tasks') {
     const { data } = await supabase
       .from('tasks')
-      .select('title, status, priority, due_date')
+      .select('title, status, priority, due_at')
       .eq('assigned_to', ctx.profileId)
       .neq('status', 'done')
-      .order('due_date', { ascending: true, nullsFirst: false })
-    return data ?? []
+      .order('due_at', { ascending: true, nullsFirst: false })
+    return (data ?? []).map((t) => ({ ...t, due_at: isoToJstDisplay(t.due_at) }))
   }
 
   if (name === 'get_announcements') {
@@ -247,13 +291,15 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
 
   if (name === 'create_event') {
     if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+    const startAt = jstDateTimeToIso(input.start_at)
+    if (!startAt) return { error: '集合時間（start_at）が正しい"YYYY-MM-DD HH:mm"形式ではありません。部員に集合時間を確認してください。' }
     const visibility = input.visibility === 'invite_only' ? 'invite_only' : 'all'
     const { data: event, error } = await supabase
       .from('club_events')
       .insert({
         title: input.title,
-        start_date: input.start_date,
-        end_date: input.end_date || null,
+        start_at: startAt,
+        end_at: jstDateTimeToIso(input.end_at),
         location: input.location || null,
         category: input.category || 'practice',
         visibility,
@@ -284,7 +330,7 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     const { error } = await supabase.from('tasks').insert({
       title: input.title,
       assigned_to: assignee.id,
-      due_date: input.due_date || null,
+      due_at: jstDateTimeToIso(input.due_at),
       priority: input.priority || 'medium',
       created_by: ctx.profileId,
     })
