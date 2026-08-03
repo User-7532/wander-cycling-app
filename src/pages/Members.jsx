@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useOutletContext } from 'react-router-dom'
-import { Pencil, Phone, PhoneCall, Search, Tags, Users } from 'lucide-react'
+import { MapPin, Pencil, Phone, PhoneCall, Search, Tags, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -267,7 +267,7 @@ export default function Members() {
       if (isOfficerPlus) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, full_name, email, phone, emergency_contact, avatar_url, year, status, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
+          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, year, status, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))
       }
@@ -393,12 +393,18 @@ export default function Members() {
                     <AttributeValueBadge key={v.id} value={v.value} color={v.attribute.color} />
                   ))}
                 </div>
-                {isOfficerPlus && (m.phone || m.emergency_contact) && (
+                {isOfficerPlus && (m.phone || m.address || m.emergency_contact) && (
                   <div className="space-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
                     {m.phone && (
                       <p className="flex items-center gap-1.5">
                         <Phone className="h-3 w-3" />
                         {m.phone}
+                      </p>
+                    )}
+                    {m.address && (
+                      <p className="flex items-center gap-1.5">
+                        <MapPin className="h-3 w-3" />
+                        {m.address}
                       </p>
                     )}
                     {m.emergency_contact && (

@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Bot, CalendarClock, Copy, Image, RotateCcw, Save, Upload } from 'lucide-react'
+import { Bot, CalendarClock, Contact, Copy, Image, RotateCcw, Save, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 
@@ -169,6 +170,64 @@ function BackgroundSection({ profile }) {
   )
 }
 
+function ContactSection({ profile }) {
+  const queryClient = useQueryClient()
+  const [email, setEmail] = useState(profile?.email ?? '')
+  const [phone, setPhone] = useState(profile?.phone ?? '')
+  const [address, setAddress] = useState(profile?.address ?? '')
+
+  useEffect(() => {
+    setEmail(profile?.email ?? '')
+    setPhone(profile?.phone ?? '')
+    setAddress(profile?.address ?? '')
+  }, [profile?.email, profile?.phone, profile?.address])
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase
+        .from('profiles')
+        .update({ email: email.trim() || null, phone: phone.trim() || null, address: address.trim() || null })
+        .eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('連絡先を保存しました')
+      queryClient.invalidateQueries({ queryKey: ['profile', profile.id] })
+    },
+    onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <Card className="p-5">
+      <div className="mb-2 flex items-center gap-2">
+        <Contact className="h-5 w-5 text-primary" />
+        <h2 className="font-bold">連絡先（任意）</h2>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        書きたい人だけで大丈夫です。空欄のままでも問題ありません。
+      </p>
+      <div className="space-y-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="contact-email">メールアドレス（任意）</Label>
+          <Input id="contact-email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="example@mail.com" />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="contact-phone">電話番号（任意）</Label>
+          <Input id="contact-phone" type="tel" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="090-1234-5678" />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="contact-address">住所（任意）</Label>
+          <Input id="contact-address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="住所" />
+        </div>
+        <Button onClick={() => save.mutate()} disabled={save.isPending}>
+          <Save className="h-4 w-4" />
+          保存する
+        </Button>
+      </div>
+    </Card>
+  )
+}
+
 export default function Settings() {
   const { profile } = useOutletContext()
   const isExecutive = profile?.club_roles?.tier === 'executive'
@@ -210,7 +269,10 @@ export default function Settings() {
         <div className="mb-6">
           <CalendarFeedSection profile={profile} />
         </div>
-        <BackgroundSection profile={profile} />
+        <div className="mb-6">
+          <BackgroundSection profile={profile} />
+        </div>
+        <ContactSection profile={profile} />
       </div>
     )
   }
@@ -225,6 +287,10 @@ export default function Settings() {
 
       <div className="mb-6">
         <BackgroundSection profile={profile} />
+      </div>
+
+      <div className="mb-6">
+        <ContactSection profile={profile} />
       </div>
 
       <div className="mb-2 flex items-center gap-2">
