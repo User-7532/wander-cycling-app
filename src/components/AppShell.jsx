@@ -18,6 +18,7 @@ import { useProfile } from '@/hooks/useProfile'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import NameConfirmDialog from '@/components/NameConfirmDialog'
 import { cn } from '@/lib/utils'
 
 const MOBILE_NAV_ITEMS = [
@@ -111,7 +112,8 @@ export default function AppShell({ user }) {
 
   return (
     <>
-      {backgroundUrl && <div className="fixed inset-0 -z-10" style={backgroundStyle} />}
+      {profile && profile.name_confirmed === false && <NameConfirmDialog profile={profile} />}
+      {backgroundUrl && <div className="fixed inset-x-0 top-0 -z-10 h-svh w-full" style={backgroundStyle} />}
       <div className="min-h-svh md:flex">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
