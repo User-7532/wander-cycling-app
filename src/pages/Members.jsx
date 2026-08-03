@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useOutletContext } from 'react-router-dom'
-import { MapPin, Pencil, Phone, PhoneCall, Search, Tags, Users } from 'lucide-react'
+import { AtSign, MapPin, Pencil, Phone, PhoneCall, Search, Tags, UserRound, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -224,6 +224,107 @@ function EditMemberDialog({ member, roles, manualAttributes, assignedValueIds, s
   )
 }
 
+function ProfileGalleryThumbnail({ image }) {
+  const [url, setUrl] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const { data, error } = await supabase.storage.from('profile-gallery').createSignedUrl(image.path, 300)
+      if (!cancelled && !error) setUrl(data.signedUrl)
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [image.path])
+
+  function openFullSize() {
+    if (url) window.open(url, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={openFullSize}
+      disabled={!url}
+      className="aspect-square overflow-hidden rounded-lg border border-border/60 bg-muted disabled:cursor-default"
+      aria-label={image.caption || '画像を見る'}
+    >
+      {url && <img src={url} alt={image.caption || ''} className="h-full w-full object-cover" />}
+    </button>
+  )
+}
+
+// Voluntarily-public self-expression content (自己紹介・SNS・ギャラリー画像) --
+// the opposite of the officer+-only contact card below: every signed-in
+// member can see this for every other member, since it's the member who
+// chose to publish it. profile_social_links/profile_gallery_images RLS is
+// open-select for any authenticated user, so no isOfficerPlus gating here.
+function PublicProfileSection({ member }) {
+  const { data: links } = useQuery({
+    queryKey: ['profile_social_links', member.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profile_social_links')
+        .select('*')
+        .eq('profile_id', member.id)
+        .order('sort_order')
+        .order('created_at')
+      if (error) throw error
+      return data
+    },
+  })
+
+  const { data: images } = useQuery({
+    queryKey: ['profile_gallery_images', member.id],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profile_gallery_images')
+        .select('*')
+        .eq('profile_id', member.id)
+        .order('sort_order')
+        .order('created_at')
+      if (error) throw error
+      return data
+    },
+  })
+
+  const hasBio = !!member.bio
+  const hasLinks = links && links.length > 0
+  const hasImages = images && images.length > 0
+
+  if (!hasBio && !hasLinks && !hasImages) return null
+
+  return (
+    <div className="mt-3 space-y-2 rounded-xl bg-muted/40 p-3 text-xs">
+      <p className="flex items-center gap-1 font-bold text-muted-foreground">
+        <UserRound className="h-3 w-3" />
+        本人が公開しているプロフィール
+      </p>
+      {hasBio && <p className="whitespace-pre-wrap text-foreground/90">{member.bio}</p>}
+      {hasLinks && (
+        <div className="space-y-0.5">
+          {links.map((link) => (
+            <p key={link.id} className="flex items-center gap-1 text-foreground/90">
+              <AtSign className="h-3 w-3 shrink-0 text-muted-foreground" />
+              <span className="font-medium">{link.platform}:</span>
+              <span className="truncate">{link.value}</span>
+            </p>
+          ))}
+        </div>
+      )}
+      {hasImages && (
+        <div className="grid grid-cols-4 gap-1.5 pt-1">
+          {images.map((image) => (
+            <ProfileGalleryThumbnail key={image.id} image={image} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Members() {
   const { isOfficerPlus, isExecutive, user } = useOutletContext()
   const [search, setSearch] = useState('')
@@ -267,7 +368,7 @@ export default function Members() {
       if (isOfficerPlus) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, year, status, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
+          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, bio, year, status, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))
       }
@@ -395,6 +496,7 @@ export default function Members() {
                 </div>
                 {isOfficerPlus && (m.phone || m.address || m.emergency_contact) && (
                   <div className="space-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
+                    <p className="font-bold">連絡先（担当者以上限定・非公開）</p>
                     {m.phone && (
                       <p className="flex items-center gap-1.5">
                         <Phone className="h-3 w-3" />
@@ -415,6 +517,7 @@ export default function Members() {
                     )}
                   </div>
                 )}
+                <PublicProfileSection member={m} />
               </Card>
             </motion.div>
           )
