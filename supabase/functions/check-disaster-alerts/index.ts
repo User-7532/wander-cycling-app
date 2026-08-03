@@ -23,7 +23,7 @@ const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPAB
 
 interface OfficeMatch {
   officeName: string
-  events: { title: string; start_date: string; visibility: string; id: string }[]
+  events: { title: string; start_at: string; visibility: string; id: string }[]
 }
 
 serve(async (req) => {
@@ -44,14 +44,17 @@ serve(async (req) => {
       officeNameByCode[code] = info.name
     }
 
-    // 2. Pull events happening in the next 14 days.
-    const today = new Date().toISOString().slice(0, 10)
-    const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+    // 2. Pull events happening in the next 14 days. start_at/end_at are
+    // timestamptz now; end_at may be null for a single-day event, in which
+    // case we treat it as ending the same instant it starts for the purpose
+    // of checking overlap with the lookahead window.
+    const now = new Date().toISOString()
+    const twoWeeksOut = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
     const { data: events } = await supabase
       .from('club_events')
-      .select('id, title, description, location, start_date, visibility')
-      .gte('start_date', today)
-      .lte('start_date', twoWeeksOut)
+      .select('id, title, description, location, start_at, end_at, visibility')
+      .lte('start_at', twoWeeksOut)
+      .or(`end_at.gte.${now},and(end_at.is.null,start_at.gte.${now})`)
 
     // 3. Match each event's free-text location/description against known
     // prefecture names and the Hokkaido regional aliases above.

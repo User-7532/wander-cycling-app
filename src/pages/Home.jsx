@@ -14,6 +14,14 @@ function formatDate(value) {
   return d.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short' })
 }
 
+// tasks.due_at is a timestamptz; format consistently with Tasks.jsx's due-date display.
+function formatDueAt(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
 function greeting() {
   const h = new Date().getHours()
   if (h < 11) return 'おはようございます'
@@ -40,16 +48,16 @@ export default function Home() {
   const displayName = profile?.full_name || user?.user_metadata?.name || '部員'
   const roleLabel = profile?.club_roles?.label_ja
 
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date().toISOString()
 
   const { data: events, isLoading: eventsLoading } = useQuery({
     queryKey: ['club_events', 'upcoming', 'home'],
     queryFn: async () => {
       const { data, error, count } = await supabase
         .from('club_events')
-        .select('id, title, start_date, end_date, location, category', { count: 'exact' })
-        .gte('start_date', today)
-        .order('start_date', { ascending: true })
+        .select('id, title, start_at, end_at, location, category', { count: 'exact' })
+        .gte('start_at', now)
+        .order('start_at', { ascending: true })
         .limit(3)
       if (error) throw error
       return { rows: data, count }
@@ -61,10 +69,10 @@ export default function Home() {
     queryFn: async () => {
       const { data, error, count } = await supabase
         .from('tasks')
-        .select('id, title, due_date, priority', { count: 'exact' })
+        .select('id, title, due_at, priority', { count: 'exact' })
         .eq('assigned_to', user.id)
         .neq('status', 'done')
-        .order('due_date', { ascending: true, nullsFirst: false })
+        .order('due_at', { ascending: true, nullsFirst: false })
         .limit(3)
       if (error) throw error
       return { rows: data, count }
@@ -138,7 +146,7 @@ export default function Home() {
                     )}
                     <span className="flex items-center gap-1">
                       <Calendar className="h-3 w-3" />
-                      {formatDate(e.start_date)}
+                      {formatDate(e.start_at)}
                     </span>
                   </div>
                 </div>
@@ -163,7 +171,7 @@ export default function Home() {
               {tasks?.rows?.map((t) => (
                 <Card key={t.id} className="flex items-center justify-between px-4 py-3">
                   <p className="text-sm font-medium">{t.title}</p>
-                  {t.due_date && <span className="shrink-0 text-xs text-muted-foreground">{t.due_date}</span>}
+                  {t.due_at && <span className="shrink-0 text-xs text-muted-foreground">{formatDueAt(t.due_at)}</span>}
                 </Card>
               ))}
             </div>
