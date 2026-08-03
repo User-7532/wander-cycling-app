@@ -30,26 +30,34 @@ const CATEGORY_VARIANT = {
 const EMPTY_FORM = { title: '', body: '', category: 'notice', pinned: false }
 
 function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChange }) {
-  const [form, setForm] = useState(mode === 'edit' ? announcement : EMPTY_FORM)
+  const isPreset = (cat) => Object.prototype.hasOwnProperty.call(CATEGORY_LABEL, cat)
+  const [form, setForm] = useState(
+    mode === 'edit' ? { ...announcement, category: isPreset(announcement.category) ? announcement.category : 'other' } : EMPTY_FORM
+  )
+  const [customCategory, setCustomCategory] = useState(mode === 'edit' && !isPreset(announcement.category) ? announcement.category || '' : '')
   const queryClient = useQueryClient()
 
   const save = useMutation({
     mutationFn: async () => {
+      const finalCategory = form.category === 'other' && customCategory.trim() ? customCategory.trim() : form.category
       if (mode === 'edit') {
         const { error } = await supabase
           .from('announcements')
-          .update({ title: form.title, body: form.body, category: form.category, pinned: form.pinned })
+          .update({ title: form.title, body: form.body, category: finalCategory, pinned: form.pinned })
           .eq('id', announcement.id)
         if (error) throw error
       } else {
-        const { error } = await supabase.from('announcements').insert(form)
+        const { error } = await supabase.from('announcements').insert({ title: form.title, body: form.body, category: finalCategory, pinned: form.pinned })
         if (error) throw error
       }
     },
     onSuccess: () => {
       toast.success(mode === 'edit' ? '更新しました' : 'お知らせを投稿しました')
       queryClient.invalidateQueries({ queryKey: ['announcements'] })
-      if (mode === 'create') setForm(EMPTY_FORM)
+      if (mode === 'create') {
+        setForm(EMPTY_FORM)
+        setCustomCategory('')
+      }
       onOpenChange(false)
     },
     onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
@@ -91,6 +99,13 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
                 ))}
               </SelectContent>
             </Select>
+            {form.category === 'other' && (
+              <Input
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                placeholder="カテゴリ名を入力"
+              />
+            )}
           </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.pinned} onChange={(e) => setForm({ ...form, pinned: e.target.checked })} className="h-4 w-4 rounded" />

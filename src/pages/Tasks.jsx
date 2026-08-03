@@ -24,12 +24,32 @@ const PRIORITY_CLASS = {
   medium: 'border-primary/40 text-primary',
   low: 'border-muted-foreground/30 text-muted-foreground',
 }
-const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'medium', due_date: '' }
+const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'medium', due_at: '' }
+
+// tasks.due_at is a timestamptz (UTC ISO string). <input type="datetime-local">
+// needs/returns a timezone-less "YYYY-MM-DDTHH:mm" string in local time.
+function toLocalInputValue(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+function formatDueAt(iso) {
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+function isOverdue(task) {
+  return task.status !== 'done' && !!task.due_at && new Date(task.due_at).getTime() < Date.now()
+}
 
 function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(
     mode === 'edit'
-      ? { title: task.title, description: task.description || '', assigned_to: task.assigned_to || '', priority: task.priority, due_date: task.due_date || '' }
+      ? { title: task.title, description: task.description || '', assigned_to: task.assigned_to || '', priority: task.priority, due_at: toLocalInputValue(task.due_at) }
       : EMPTY_FORM
   )
   const queryClient = useQueryClient()
@@ -41,7 +61,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         description: form.description || null,
         assigned_to: form.assigned_to || null,
         priority: form.priority,
-        due_date: form.due_date || null,
+        due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
       }
       const { error } = mode === 'edit' ? await supabase.from('tasks').update(payload).eq('id', task.id) : await supabase.from('tasks').insert(payload)
       if (error) throw error
@@ -110,7 +130,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="t-due">期限</Label>
-              <Input id="t-due" type="date" value={form.due_date} onChange={(e) => setForm({ ...form, due_date: e.target.value })} />
+              <Input id="t-due" type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} />
             </div>
           </div>
           <Button type="submit" className="w-full" disabled={save.isPending}>
@@ -137,7 +157,7 @@ export default function Tasks() {
       const { data, error } = await supabase
         .from('tasks')
         .select('*, assignee:profiles!tasks_assigned_to_fkey(full_name)')
-        .order('due_date', { ascending: true, nullsFirst: false })
+        .order('due_at', { ascending: true, nullsFirst: false })
       if (error) throw error
       return data
     },
@@ -209,7 +229,9 @@ export default function Tasks() {
       )}
 
       <div className="space-y-3">
-        {tasks?.map((t, i) => (
+        {tasks?.map((t, i) => {
+          const overdue = isOverdue(t)
+          return (
           <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
             <Card className={cn('p-5', t.status === 'done' && 'opacity-60')}>
               <div className="mb-1.5 flex items-start justify-between gap-2">
@@ -239,7 +261,9 @@ export default function Tasks() {
               {t.description && <p className="mb-2 text-sm text-muted-foreground">{t.description}</p>}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
                 {t.assignee?.full_name && <span>担当: {t.assignee.full_name}</span>}
-                {t.due_date && <span>期限: {t.due_date}</span>}
+                {t.due_at && (
+                  <span className={overdue ? 'font-medium text-destructive' : ''}>期限: {formatDueAt(t.due_at)}</span>
+                )}
               </div>
               {canEdit(t) && (
                 <div className="mt-3 flex gap-2">
@@ -258,7 +282,8 @@ export default function Tasks() {
               )}
             </Card>
           </motion.div>
-        ))}
+          )
+        })}
       </div>
 
       {editing && <TaskFormDialog mode="edit" task={editing} members={members} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />}
