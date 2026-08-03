@@ -2,6 +2,9 @@ import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
 const LINE_REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
+// Same push endpoint/shape as notify-task-update and task-deadline-reminders
+// (single recipient per call, so the push — not multicast — endpoint).
+const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
 const MAX_TOOL_ROUNDS = 4
@@ -29,6 +32,23 @@ async function replyToLine(replyToken: string, text: string, accessToken: string
     },
     body: JSON.stringify({ replyToken, messages: [{ type: 'text', text: text.slice(0, 4900) }] }),
   })
+}
+
+// Push (as opposed to reply) — used when the bot initiates a message outside
+// of a reply-token window, e.g. a remind_incomplete_task_holders tool call.
+// Returns whether the push actually succeeded so callers can report honestly.
+async function pushToLine(lineUserId: string, text: string, accessToken: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await fetch(LINE_PUSH_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+    body: JSON.stringify({ to: lineUserId, messages: [{ type: 'text', text: text.slice(0, 4900) }] }),
+  })
+  if (!res.ok) {
+    const errText = await res.text()
+    console.error('LINE push failed:', errText)
+    return { ok: false, error: errText }
+  }
+  return { ok: true }
 }
 
 // --- Tools available to the assistant --------------------------------------------
@@ -160,6 +180,21 @@ const EXECUTIVE_TOOLS = [
       type: 'object',
       properties: { title: { type: 'string' }, body: { type: 'string' } },
       required: ['title', 'body'],
+    },
+  },
+  {
+    name: 'remind_incomplete_task_holders',
+    description:
+      '指定したタスク名（部分一致・自然文でよい）に該当する、未完了（todoまたはin_progress）のタスクを持つ部員全員に、LINEでリマインダーをプッシュ送信する（アプリ管理者のみ実行可能）。「部費支払いが終わってない人にリマインドして」のような依頼で使う。該当するタスクが1件もない場合は、その旨を正直に伝えること。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_name_query: {
+          type: 'string',
+          description: 'リマインドしたいタスクの名前・キーワード（部分一致で検索、例: "部費支払い"）',
+        },
+      },
+      required: ['task_name_query'],
     },
   },
 ]
@@ -343,6 +378,77 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     const { error } = await supabase.from('announcements').insert({ title: input.title, body: input.body, created_by: ctx.profileId })
     if (error) return { error: error.message }
     return { ok: true }
+  }
+
+  if (name === 'remind_incomplete_task_holders') {
+    // Re-check server-side — the tool being offered only when ctx.tier ===
+    // 'executive' (see runAssistant) is a UX nicety, not the security
+    // boundary. Never trust that the model only calls this when it's allowed.
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+
+    const query = String(input.task_name_query ?? '').trim()
+    if (!query) return { error: 'task_name_queryが空です' }
+
+    const { data: matchingTasks, error } = await supabase
+      .from('tasks')
+      .select('id, title, due_at, assigned_to')
+      .neq('status', 'done')
+      .ilike('title', `%${query}%`)
+    if (error) return { error: error.message }
+
+    if (!matchingTasks || matchingTasks.length === 0) {
+      return { matched_tasks: 0, message: `「${query}」に一致する未完了のタスクは見つかりませんでした。リマインドは送信していません。` }
+    }
+
+    // Batch-fetch names + LINE links for every distinct assignee up front,
+    // rather than one query per task.
+    const assigneeIds = [...new Set(matchingTasks.map((t) => t.assigned_to).filter((id): id is string => !!id))]
+    const { data: assigneeProfiles } = assigneeIds.length
+      ? await supabase.from('profiles').select('id, full_name').in('id', assigneeIds)
+      : { data: [] }
+    const nameByProfileId = new Map((assigneeProfiles ?? []).map((p) => [p.id, p.full_name]))
+
+    const { data: identityRows } = assigneeIds.length
+      ? await supabase.from('line_identities').select('profile_id, line_user_id').in('profile_id', assigneeIds)
+      : { data: [] }
+    const lineUserIdByProfileId = new Map((identityRows ?? []).map((r) => [r.profile_id, r.line_user_id]))
+
+    const accessToken = Deno.env.get('LINE_BOT_CHANNEL_ACCESS_TOKEN')!
+    const reminded: { name: string; task_title: string }[] = []
+    const noLineLinked: { name: string; task_title: string }[] = []
+    const failed: { name: string; task_title: string; error: string }[] = []
+
+    for (const task of matchingTasks) {
+      if (!task.assigned_to) continue // task has no assignee at all — nobody to remind
+      const name = nameByProfileId.get(task.assigned_to) ?? '不明な部員'
+      const lineUserId = lineUserIdByProfileId.get(task.assigned_to)
+
+      if (!lineUserId) {
+        noLineLinked.push({ name, task_title: task.title })
+        continue
+      }
+
+      const lines = [`⏰ リマインダー: ${task.title}`]
+      if (task.due_at) lines.push(`期限: ${isoToJstDisplay(task.due_at)}`)
+      const pushResult = await pushToLine(lineUserId, lines.join('\n'), accessToken)
+
+      if (pushResult.ok) {
+        reminded.push({ name, task_title: task.title })
+      } else {
+        failed.push({ name, task_title: task.title, error: pushResult.error })
+      }
+    }
+
+    return {
+      query,
+      matched_tasks: matchingTasks.length,
+      reminded_count: reminded.length,
+      reminded,
+      no_line_linked_count: noLineLinked.length,
+      no_line_linked: noLineLinked,
+      failed_count: failed.length,
+      failed,
+    }
   }
 
   return { error: `不明なツール: ${name}` }
