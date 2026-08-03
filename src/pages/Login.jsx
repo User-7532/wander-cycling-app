@@ -1,18 +1,8 @@
-import { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, ChevronDown, Loader2 } from 'lucide-react'
-import { supabase } from '@/supabase'
+import { motion } from 'framer-motion'
+import { MessageCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
 
 export default function Login() {
-  const [showEmailForm, setShowEmailForm] = useState(false)
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(false)
-
   function handleLineLogin() {
     const lineAuthUrl = `https://access.line.me/oauth2/v2.1/authorize?response_type=code&client_id=${
       import.meta.env.VITE_LINE_CHANNEL_ID
@@ -20,17 +10,6 @@ export default function Login() {
       `${window.location.origin}/auth/callback`
     )}&state=wandercycling&scope=profile%20openid`
     window.location.href = lineAuthUrl
-  }
-
-  async function handleEmailLogin(e) {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
-    setLoading(false)
-    if (error) {
-      setError('メールアドレスかパスワードが違います。')
-    }
   }
 
   return (
@@ -70,57 +49,6 @@ export default function Login() {
             <MessageCircle className="h-5 w-5" />
             LINEでログイン
           </Button>
-
-          <button
-            type="button"
-            onClick={() => setShowEmailForm((v) => !v)}
-            className="mx-auto mt-6 flex items-center gap-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-          >
-            メールアドレスでログイン
-            <ChevronDown className={`h-3.5 w-3.5 transition-transform ${showEmailForm ? 'rotate-180' : ''}`} />
-          </button>
-
-          <AnimatePresence initial={false}>
-            {showEmailForm && (
-              <motion.form
-                onSubmit={handleEmailLogin}
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                transition={{ duration: 0.3, ease: 'easeInOut' }}
-                className="overflow-hidden"
-              >
-                <div className="mt-5 space-y-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="email">メールアドレス</Label>
-                    <Input
-                      id="email"
-                      type="email"
-                      autoComplete="email"
-                      value={email}
-                      onChange={(e) => setEmail(e.target.value)}
-                      required
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="password">パスワード</Label>
-                    <Input
-                      id="password"
-                      type="password"
-                      autoComplete="current-password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                    />
-                  </div>
-                  {error && <p className="text-sm text-destructive">{error}</p>}
-                  <Button type="submit" variant="secondary" className="w-full" disabled={loading}>
-                    {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : 'ログイン'}
-                  </Button>
-                </div>
-              </motion.form>
-            )}
-          </AnimatePresence>
         </div>
 
         <p className="mt-6 text-center text-xs text-muted-foreground">WanderCycling 部内システム</p>
