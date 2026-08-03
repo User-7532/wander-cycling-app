@@ -477,3 +477,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/notify-task-update/deno.json"
 entrypoint = "./functions/notify-task-update/index.ts"
+
+[functions.task-deadline-reminders]
+enabled = true
+verify_jwt = false
+import_map = "./functions/task-deadline-reminders/deno.json"
+entrypoint = "./functions/task-deadline-reminders/index.ts"

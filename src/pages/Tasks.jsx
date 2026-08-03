@@ -1,8 +1,8 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useOutletContext } from 'react-router-dom'
-import { ListTodo, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Link as RouterLink, useOutletContext } from 'react-router-dom'
+import { CalendarClock, ChevronDown, ListTodo, Pencil, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -287,6 +287,27 @@ export default function Tasks() {
       </div>
 
       {editing && <TaskFormDialog mode="edit" task={editing} members={members} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />}
+
+      <details className="group mt-8 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+        <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-foreground">
+          <span className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4" />
+            スマホのカレンダーと同期する
+          </span>
+          <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-2 space-y-1">
+          <p>自分のタスクの期限は、スマホの標準カレンダーアプリに登録して確認することもできます。</p>
+          <p>
+            <RouterLink to="/settings" className="font-medium text-primary hover:underline">
+              設定ページ
+            </RouterLink>
+            で自分専用のリンクを確認してください。
+          </p>
+          <p>iPhoneの場合: リンクをタップして「登録」を選ぶだけ。</p>
+          <p>Android・Googleカレンダーの場合: 「他のカレンダー」→「URLで追加」でリンクを貼り付けてください。</p>
+        </div>
+      </details>
     </div>
   )
 }

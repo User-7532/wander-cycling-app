@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useOutletContext } from 'react-router-dom'
-import { Calendar, Clock, Link2, MapPin, Paperclip, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
+import { Link as RouterLink, useOutletContext } from 'react-router-dom'
+import { Calendar, CalendarClock, ChevronDown, Clock, Link2, MapPin, Paperclip, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -574,6 +574,27 @@ export default function Schedule() {
       </div>
 
       {editing && <EventFormDialog mode="edit" event={editing} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />}
+
+      <details className="group mt-8 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+        <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-foreground">
+          <span className="flex items-center gap-2">
+            <CalendarClock className="h-4 w-4" />
+            スマホのカレンダーと同期する
+          </span>
+          <ChevronDown className="h-4 w-4 transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="mt-2 space-y-1">
+          <p>この予定表はスマホの標準カレンダーアプリに登録できます。</p>
+          <p>
+            <RouterLink to="/settings" className="font-medium text-primary hover:underline">
+              設定ページ
+            </RouterLink>
+            で自分専用のリンクを確認してください。
+          </p>
+          <p>iPhoneの場合: リンクをタップして「登録」を選ぶだけ。</p>
+          <p>Android・Googleカレンダーの場合: 「他のカレンダー」→「URLで追加」でリンクを貼り付けてください。</p>
+        </div>
+      </details>
     </div>
   )
 }
