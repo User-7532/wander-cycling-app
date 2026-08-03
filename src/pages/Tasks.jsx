@@ -56,7 +56,13 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   )
   const [bulkMode, setBulkMode] = useState(false)
   const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
-  const [deselectedIds, setDeselectedIds] = useState(new Set())
+  // selectedIds is the actual bulk-create target group. It is NOT derived
+  // live from the filter condition below -- the filter condition is a
+  // preview of who an "適用" click would affect. Clicking apply flips
+  // (XORs) the currently-matched people's membership in selectedIds, so
+  // e.g. "全員選択" then applying a "3年" filter deselects exactly the
+  // 3年 people, leaving everyone else selected.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
   const queryClient = useQueryClient()
 
   const save = useMutation({
@@ -130,15 +136,11 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     enabled: mode === 'create' && bulkMode && validFilters.length > 0 && validFilters.length === filters.length,
   })
 
-  // Reset manual deselection whenever the filter combination changes, following React's
-  // "adjust state during render" pattern (cheaper than useEffect, avoids an extra render).
-  const [lastFilterKey, setLastFilterKey] = useState(filterKey)
-  if (filterKey !== lastFilterKey) {
-    setLastFilterKey(filterKey)
-    setDeselectedIds(new Set())
-  }
-
-  const selectedProfiles = (matchedProfiles ?? []).filter((p) => !deselectedIds.has(p.id))
+  // selectedProfiles is resolved against the full member roster (not just
+  // matchedProfiles) so that people toggled in under an earlier filter
+  // combination stay visible/selected even after the filter condition
+  // above changes.
+  const selectedProfiles = (members ?? []).filter((m) => selectedIds.has(m.id))
 
   function updateFilter(idx, patch) {
     setFilters((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
@@ -150,12 +152,36 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     setFilters((prev) => prev.filter((_, i) => i !== idx))
   }
   function toggleProfile(id) {
-    setDeselectedIds((prev) => {
+    setSelectedIds((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
       else next.add(id)
       return next
     })
+  }
+  function applyFilterToggle() {
+    const ids = (matchedProfiles ?? []).map((p) => p.id)
+    if (ids.length === 0) return
+    const next = new Set(selectedIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setSelectedIds(next)
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+  function selectAllProfiles() {
+    setSelectedIds(new Set((members ?? []).map((m) => m.id)))
+  }
+  function deselectAllProfiles() {
+    setSelectedIds(new Set())
   }
 
   const bulkSave = useMutation({
@@ -177,6 +203,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setForm(EMPTY_FORM)
       setBulkMode(false)
       setFilters([{ ...EMPTY_FILTER }])
+      setSelectedIds(new Set())
       onOpenChange(false)
     },
     onError: (err) => toast.error(`追加に失敗しました: ${err.message}`),
@@ -272,29 +299,42 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                   )}
                 </div>
               ))}
-              <Button type="button" size="sm" variant="outline" onClick={addFilter}>
-                条件を追加（AND）
-              </Button>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={addFilter}>
+                  条件を追加（AND）
+                </Button>
+                <Button type="button" size="sm" variant="secondary" disabled={!matchedProfiles?.length} onClick={applyFilterToggle}>
+                  この条件で選択を切替
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+              </p>
+              {matchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
+              {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
+                <p className="text-xs text-muted-foreground">該当する部員がいません</p>
+              )}
 
               <div className="space-y-1.5 pt-2">
-                <Label>
-                  対象者プレビュー
-                  {matchedProfiles ? `（${selectedProfiles.length}人選択中 / ${matchedProfiles.length}人該当）` : ''}
-                </Label>
-                {matchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
-                {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
-                  <p className="text-xs text-muted-foreground">該当する部員がいません</p>
-                )}
-                {matchedProfiles?.length > 0 && (
-                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
-                    {matchedProfiles.map((p) => (
-                      <label key={p.id} className="flex items-center gap-2 text-sm">
-                        <input type="checkbox" checked={!deselectedIds.has(p.id)} onChange={() => toggleProfile(p.id)} />
-                        {p.full_name}
-                      </label>
-                    ))}
+                <div className="flex items-center justify-between">
+                  <Label>対象者（{selectedProfiles.length}人選択中）</Label>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={selectAllProfiles}>
+                      全員選択
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={deselectAllProfiles}>
+                      全員解除
+                    </Button>
                   </div>
-                )}
+                </div>
+                <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+                  {members?.map((m) => (
+                    <label key={m.id} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleProfile(m.id)} />
+                      {m.full_name}
+                    </label>
+                  ))}
+                </div>
               </div>
             </div>
           )}

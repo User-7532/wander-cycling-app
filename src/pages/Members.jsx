@@ -229,6 +229,13 @@ function BulkRoleAssignPanel({ members, attributes, roles, assignmentsByProfile 
   const [bulkValueId, setBulkValueId] = useState('')
   const [filters, setFilters] = useState([])
   const [bulkRoleId, setBulkRoleId] = useState('')
+  // selectedIds is the actual role-assignment target group. `matches` below
+  // (from the attribute condition builder) is only a preview of who an
+  // "選択を切替" click would affect -- clicking it flips (XORs) the
+  // currently-matched people's membership in selectedIds, so e.g.
+  // "全員選択" then toggling a "3年" condition deselects exactly the 3年
+  // people, leaving everyone else selected.
+  const [selectedIds, setSelectedIds] = useState(() => new Set())
   const queryClient = useQueryClient()
 
   const bulkAttribute = attributes.find((a) => a.id === bulkAttributeId)
@@ -239,6 +246,8 @@ function BulkRoleAssignPanel({ members, attributes, roles, assignmentsByProfile 
     return members.filter((m) => filters.every((f) => (assignmentsByProfile[m.id] ?? []).includes(f.valueId)))
   }, [members, filters, assignmentsByProfile])
 
+  const selectedMembers = useMemo(() => members.filter((m) => selectedIds.has(m.id)), [members, selectedIds])
+
   function addFilter() {
     const attribute = attributes.find((a) => a.id === bulkAttributeId)
     const value = attribute?.member_attribute_values?.find((v) => v.id === bulkValueId)
@@ -247,16 +256,52 @@ function BulkRoleAssignPanel({ members, attributes, roles, assignmentsByProfile 
     setBulkValueId('')
   }
 
+  function toggleMatchesIntoSelection() {
+    if (matches.length === 0) return
+    const next = new Set(selectedIds)
+    let added = 0
+    let removed = 0
+    for (const m of matches) {
+      if (next.has(m.id)) {
+        next.delete(m.id)
+        removed++
+      } else {
+        next.add(m.id)
+        added++
+      }
+    }
+    setSelectedIds(next)
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  function toggleMember(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAllMembers() {
+    setSelectedIds(new Set(members.map((m) => m.id)))
+  }
+
+  function deselectAllMembers() {
+    setSelectedIds(new Set())
+  }
+
   const applyRole = useMutation({
     mutationFn: async () => {
-      const ids = matches.map((m) => m.id)
+      const ids = selectedMembers.map((m) => m.id)
       const { error } = await supabase.from('profiles').update({ club_role_id: Number(bulkRoleId) }).in('id', ids)
       if (error) throw error
     },
     onSuccess: () => {
-      toast.success(`${matches.length}名の役職を更新しました`)
+      toast.success(`${selectedMembers.length}名の役職を更新しました`)
       queryClient.invalidateQueries({ queryKey: ['members', 'full'] })
       setFilters([])
+      setSelectedIds(new Set())
       setBulkRoleId('')
     },
     onError: (err) => toast.error(`一括更新に失敗しました: ${err.message}`),
@@ -325,10 +370,45 @@ function BulkRoleAssignPanel({ members, attributes, roles, assignmentsByProfile 
         </div>
       )}
 
-      <p className="mb-2 text-sm">
-        該当メンバー: <span className="font-bold">{matches.length}名</span>
-        {matches.length > 0 && <span className="text-xs text-muted-foreground">（{matches.map((m) => m.full_name).join('、')}）</span>}
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <p className="text-sm">
+          条件に一致: <span className="font-bold">{matches.length}名</span>
+        </p>
+        <Button type="button" size="sm" variant="secondary" disabled={matches.length === 0} onClick={toggleMatchesIntoSelection}>
+          選択を切替
+        </Button>
+      </div>
+      <p className="mb-3 text-xs text-muted-foreground">
+        条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
       </p>
+
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm">
+          選択中のメンバー: <span className="font-bold">{selectedMembers.length}名</span>
+          {selectedMembers.length > 0 && (
+            <span className="text-xs text-muted-foreground">（{selectedMembers.map((m) => m.full_name).join('、')}）</span>
+          )}
+        </p>
+        <div className="flex gap-2">
+          <Button type="button" size="sm" variant="outline" onClick={selectAllMembers}>
+            全員選択
+          </Button>
+          <Button type="button" size="sm" variant="outline" onClick={deselectAllMembers}>
+            全員解除
+          </Button>
+        </div>
+      </div>
+
+      {selectedMembers.length > 0 && (
+        <div className="mb-3 max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+          {selectedMembers.map((m) => (
+            <label key={m.id} className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={selectedIds.has(m.id)} onChange={() => toggleMember(m.id)} />
+              {m.full_name}
+            </label>
+          ))}
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="w-48 space-y-1.5">
@@ -349,10 +429,10 @@ function BulkRoleAssignPanel({ members, attributes, roles, assignmentsByProfile 
         <Button
           type="button"
           size="sm"
-          disabled={matches.length === 0 || !bulkRoleId || applyRole.isPending}
+          disabled={selectedMembers.length === 0 || !bulkRoleId || applyRole.isPending}
           onClick={() => {
             const roleLabel = roles?.find((r) => String(r.id) === bulkRoleId)?.label_ja
-            if (confirm(`${matches.length}名の役職を「${roleLabel}」に変更しますか？`)) applyRole.mutate()
+            if (confirm(`${selectedMembers.length}名の役職を「${roleLabel}」に変更しますか？`)) applyRole.mutate()
           }}
         >
           一括適用する

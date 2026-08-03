@@ -172,10 +172,12 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     if (existingInvitees) setForm((f) => ({ ...f, inviteeIds: existingInvitees }))
   }, [existingInvitees])
 
-  // Attribute-based bulk selection: pick an attribute + value, then add
-  // everyone tagged with that value to the invitee checklist at once. This
-  // only pre-checks matches -- the manual checklist below still lets the
-  // user add/remove individuals afterward.
+  // Attribute-based bulk selection: pick an attribute + value, then flip
+  // (toggle) everyone tagged with that value in the invitee checklist at
+  // once -- anyone already selected in that matched group gets deselected,
+  // and anyone not yet selected gets selected. This lets combos like
+  // "select all, then flip off 3年" work. The manual checklist below still
+  // lets the user add/remove individuals afterward.
   const { data: attributes } = useQuery({
     queryKey: ['member_attributes', 'for-invite-filter'],
     queryFn: async () => {
@@ -211,8 +213,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       return
     }
     const ids = data.map((r) => r.profile_id)
-    setForm((f) => ({ ...f, inviteeIds: Array.from(new Set([...f.inviteeIds, ...ids])) }))
-    toast.success(`${ids.length}人を追加しました`)
+    const next = new Set(form.inviteeIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setForm((f) => ({ ...f, inviteeIds: Array.from(next) }))
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
 
   function toggleInvitee(id) {
@@ -220,6 +234,14 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       ...f,
       inviteeIds: f.inviteeIds.includes(id) ? f.inviteeIds.filter((x) => x !== id) : [...f.inviteeIds, id],
     }))
+  }
+
+  function selectAllInvitees() {
+    setForm((f) => ({ ...f, inviteeIds: (members || []).map((m) => m.id) }))
+  }
+
+  function deselectAllInvitees() {
+    setForm((f) => ({ ...f, inviteeIds: [] }))
   }
 
   const save = useMutation({
@@ -444,10 +466,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                     </SelectContent>
                   </Select>
                   <Button type="button" size="sm" variant="secondary" disabled={!filterValueId} onClick={applyAttributeFilter}>
-                    追加
+                    選択を切替
                   </Button>
                 </div>
-                <p className="text-xs text-muted-foreground">該当メンバーを下のリストに一括追加します（追加後も個別に調整できます）</p>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={selectAllInvitees}>
+                  全員選択
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={deselectAllInvitees}>
+                  全員解除
+                </Button>
               </div>
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
                 {members?.map((m) => (
