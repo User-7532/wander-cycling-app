@@ -169,7 +169,7 @@ function EditMemberDialog({ member, roles, manualAttributes, assignedValueIds, s
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label>学年（旧項目）</Label>
+              <Label>学年（旧項目、任意）</Label>
               <Select value={year} onValueChange={setYear}>
                 <SelectTrigger>
                   <SelectValue placeholder="未設定" />
@@ -201,7 +201,7 @@ function EditMemberDialog({ member, roles, manualAttributes, assignedValueIds, s
           </div>
 
           <div className="space-y-1.5 border-t border-border/60 pt-3">
-            <Label htmlFor="cohort-year">入部年度（学年・現役/OB は自動計算されます）</Label>
+            <Label htmlFor="cohort-year">入部年度（学年・現役/OB は自動計算されます、任意）</Label>
             <Input id="cohort-year" type="number" placeholder="例: 2024" value={cohortYear} onChange={(e) => setCohortYear(e.target.value)} />
             <div className="flex flex-wrap gap-1.5 pt-1">
               {systemValues.length === 0 && <p className="text-xs text-muted-foreground">現在の自動計算値はまだありません</p>}

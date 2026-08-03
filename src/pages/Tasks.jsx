@@ -242,12 +242,12 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
             <Input id="t-title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="t-desc">詳細</Label>
+            <Label htmlFor="t-desc">詳細（任意）</Label>
             <Textarea id="t-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
           {!(mode === 'create' && bulkMode) ? (
             <div className="space-y-1.5">
-              <Label>担当者</Label>
+              <Label>担当者（任意）</Label>
               <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
                 <SelectTrigger>
                   <SelectValue placeholder="選択してください" />
@@ -355,7 +355,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               </Select>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="t-due">期限</Label>
+              <Label htmlFor="t-due">期限（任意）</Label>
               <Input id="t-due" type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} />
             </div>
           </div>

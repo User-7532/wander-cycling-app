@@ -88,7 +88,7 @@ function RecordFormDialog({ mode, record, trigger, open, onOpenChange }) {
             <Input id="f-amount" type="number" required min="0" value={form.amount_jpy} onChange={(e) => setForm({ ...form, amount_jpy: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="f-desc">メモ</Label>
+            <Label htmlFor="f-desc">メモ（任意）</Label>
             <Input id="f-desc" value={form.description || ''} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
           <Button type="submit" className="w-full" disabled={save.isPending}>

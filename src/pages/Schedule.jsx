@@ -425,7 +425,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
             </div>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="location">場所</Label>
+            <Label htmlFor="location">場所（任意）</Label>
             <Input id="location" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
           </div>
           <div className="space-y-1.5">

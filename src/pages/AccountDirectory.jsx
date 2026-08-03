@@ -65,11 +65,11 @@ function EntryFormDialog({ mode, entry, trigger, open, onOpenChange }) {
             <Input id="s-name" required placeholder="例: 部のGmail" value={form.service_name} onChange={(e) => setForm({ ...form, service_name: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="s-login">ログインID / メールアドレス</Label>
+            <Label htmlFor="s-login">ログインID / メールアドレス（任意）</Label>
             <Input id="s-login" value={form.login_id || ''} onChange={(e) => setForm({ ...form, login_id: e.target.value })} />
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="s-secret">パスワード{mode === 'edit' && '（変更する場合のみ入力）'}</Label>
+            <Label htmlFor="s-secret">パスワード{mode === 'edit' ? '（変更する場合のみ入力）' : '（任意）'}</Label>
             <Input id="s-secret" type="password" value={form.secret_value} onChange={(e) => setForm({ ...form, secret_value: e.target.value })} />
           </div>
           <div className="space-y-1.5">
@@ -94,7 +94,7 @@ function EntryFormDialog({ mode, entry, trigger, open, onOpenChange }) {
             </Select>
           </div>
           <div className="space-y-1.5">
-            <Label htmlFor="s-notes">メモ</Label>
+            <Label htmlFor="s-notes">メモ（任意）</Label>
             <Textarea id="s-notes" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} />
           </div>
           <Button type="submit" className="w-full" disabled={save.isPending}>
