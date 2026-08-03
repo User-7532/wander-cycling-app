@@ -29,6 +29,19 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 // before their involvement actually ends. This is naturally idempotent:
 // it only fires on the run where the stored active_status value actually
 // changes to OB, so re-running the same day is a no-op here too.
+//
+// Also separately: for *every* profile whose active_status newly becomes OB
+// this run (not just executives), we reassign profiles.club_role_id to the
+// seeded OB/alumni-tier role (club_roles id=14), which naturally clears
+// whatever specific position (幹事長, 広報, ...) they held. This is a normal
+// `profiles` UPDATE, so the zero-executive-lockout trigger
+// (prevent_zero_executive_lockout) fires as usual -- if this profile is
+// currently the sole remaining executive, the trigger raises and blocks
+// just that one update; we catch it per-profile (one UPDATE statement per
+// profile, so one block never rolls back anyone else's role-clear) and
+// report it back as `roleClearBlocked`, leaving that person's role
+// untouched until a successor is promoted -- exactly what the succession
+// nudge above exists to prompt.
 
 const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 
@@ -154,6 +167,11 @@ serve(async (req) => {
     // the people who need a succession nudge below.
     const newlyRetiredExecutives: { id: string; full_name: string }[] = []
 
+    // Every profile whose active_status is newly flipping to OB *this run*
+    // (was not already OB), executive or not -- these all get their
+    // club_role_id reassigned to the seeded OB role below.
+    const newlyOB: { id: string; full_name: string }[] = []
+
     for (const p of profiles ?? []) {
       const cohortYear = p.cohort_year as number
       const grade = academicYear - cohortYear + 1
@@ -199,10 +217,33 @@ serve(async (req) => {
         activeUpdates++
 
         const previousActiveLabel = currentActiveValueId ? activeLabelByValueId.get(currentActiveValueId) : undefined
-        if (activeLabel === 'OB' && previousActiveLabel !== 'OB' && executiveRoleIds.has(p.club_role_id)) {
-          newlyRetiredExecutives.push({ id: p.id, full_name: p.full_name })
+        if (activeLabel === 'OB' && previousActiveLabel !== 'OB') {
+          newlyOB.push({ id: p.id, full_name: p.full_name })
+          if (executiveRoleIds.has(p.club_role_id)) {
+            newlyRetiredExecutives.push({ id: p.id, full_name: p.full_name })
+          }
         }
       }
+    }
+
+    // Role-clear: for every profile that just newly became OB, reassign
+    // club_role_id to the seeded OB/alumni-tier role (id 14), which
+    // naturally clears whatever specific position they held. This is a
+    // normal `profiles` UPDATE (not a bypass), so
+    // prevent_zero_executive_lockout fires as usual -- one UPDATE per
+    // profile, so a block on one person's update can never roll back
+    // another person's role-clear in the same run.
+    const OB_ROLE_ID = 14
+    let roleClears = 0
+    const roleClearBlocked: { id: string; full_name: string; reason: string }[] = []
+    for (const retiree of newlyOB) {
+      const { error: roleErr } = await supabase.from('profiles').update({ club_role_id: OB_ROLE_ID }).eq('id', retiree.id)
+      if (roleErr) {
+        console.log(`role-clear blocked for ${retiree.full_name} (${retiree.id}): ${roleErr.message}`)
+        roleClearBlocked.push({ id: retiree.id, full_name: retiree.full_name, reason: roleErr.message })
+        continue
+      }
+      roleClears++
     }
 
     // Succession nudge: for each profile that just auto-retired (OB) while
@@ -272,6 +313,8 @@ serve(async (req) => {
         gradeUpdates,
         activeUpdates,
         skipped,
+        roleClears,
+        roleClearBlocked,
         successionNudges,
       }),
       { headers: { 'Content-Type': 'application/json' } },
