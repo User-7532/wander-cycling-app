@@ -27,6 +27,22 @@ async function getNonObLineUserIds(): Promise<string[]> {
   return identities.filter((i) => !obProfileIds.has(i.profile_id)).map((i) => i.line_user_id)
 }
 
+// Explicit hand-picked recipients for a 'targeted' announcement. Unlike the
+// default 'all' audience, this intentionally ignores OB status -- an admin
+// picking specific people (which may include OB alumni) should always be
+// honored, not silently filtered. Still excludes anyone with no linked LINE
+// account, since there's no way to reach them regardless.
+async function getTargetedLineUserIds(announcementId: string): Promise<string[]> {
+  const { data: recipients } = await supabase.from('announcement_recipients').select('profile_id').eq('announcement_id', announcementId)
+  if (!recipients || recipients.length === 0) return []
+
+  const profileIds = recipients.map((r) => r.profile_id)
+  const { data: identities } = await supabase.from('line_identities').select('profile_id, line_user_id').in('profile_id', profileIds)
+  if (!identities || identities.length === 0) return []
+
+  return identities.map((i) => i.line_user_id)
+}
+
 // LINE multicast caps recipients at 500 per call, so chunk.
 async function sendMulticast(to: string[], messages: unknown[], accessToken: string) {
   for (let i = 0; i < to.length; i += 500) {
@@ -55,7 +71,7 @@ serve(async (req) => {
 
   try {
     const { id } = await req.json()
-    const { data: announcement, error } = await supabase.from('announcements').select('title, body').eq('id', id).single()
+    const { data: announcement, error } = await supabase.from('announcements').select('title, body, visibility').eq('id', id).single()
     if (error || !announcement) {
       return new Response(JSON.stringify({ error: error?.message ?? 'announcement not found' }), { status: 404 })
     }
@@ -63,9 +79,9 @@ serve(async (req) => {
     const text = `📢 ${announcement.title}\n\n${announcement.body}`.slice(0, 4900)
 
     const accessToken = Deno.env.get('LINE_BOT_CHANNEL_ACCESS_TOKEN')!
-    const to = await getNonObLineUserIds()
+    const to = announcement.visibility === 'targeted' ? await getTargetedLineUserIds(id) : await getNonObLineUserIds()
     if (to.length === 0) {
-      return new Response(JSON.stringify({ notified: false, reason: 'no non-OB linked LINE ids' }))
+      return new Response(JSON.stringify({ notified: false, reason: announcement.visibility === 'targeted' ? 'no linked LINE ids among recipients' : 'no non-OB linked LINE ids' }))
     }
 
     try {

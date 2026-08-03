@@ -1,8 +1,8 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Megaphone, Pencil, Pin, Plus, Trash2 } from 'lucide-react'
+import { Megaphone, Pencil, Pin, Plus, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -27,36 +27,151 @@ const CATEGORY_VARIANT = {
   important: 'default',
 }
 
-const EMPTY_FORM = { title: '', body: '', category: 'notice', pinned: false }
+const EMPTY_FORM = { title: '', body: '', category: 'notice', pinned: false, visibility: 'all', recipientIds: [] }
 
 function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChange }) {
   const isPreset = (cat) => Object.prototype.hasOwnProperty.call(CATEGORY_LABEL, cat)
   const [form, setForm] = useState(
-    mode === 'edit' ? { ...announcement, category: isPreset(announcement.category) ? announcement.category : 'other' } : EMPTY_FORM
+    mode === 'edit'
+      ? {
+          ...announcement,
+          category: isPreset(announcement.category) ? announcement.category : 'other',
+          visibility: announcement.visibility || 'all',
+          recipientIds: [],
+        }
+      : EMPTY_FORM
   )
   const [customCategory, setCustomCategory] = useState(mode === 'edit' && !isPreset(announcement.category) ? announcement.category || '' : '')
+  const [filterAttrId, setFilterAttrId] = useState('')
+  const [filterValueId, setFilterValueId] = useState('')
   const queryClient = useQueryClient()
+
+  const { data: members } = useQuery({
+    queryKey: ['profiles', 'for-announcement-target'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name')
+      if (error) throw error
+      return data
+    },
+    enabled: open && form.visibility === 'targeted',
+  })
+
+  const { data: existingRecipients } = useQuery({
+    queryKey: ['announcement_recipients', announcement?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('announcement_recipients').select('profile_id').eq('announcement_id', announcement.id)
+      if (error) throw error
+      return data.map((r) => r.profile_id)
+    },
+    enabled: mode === 'edit' && open && announcement.visibility === 'targeted',
+  })
+
+  useEffect(() => {
+    if (existingRecipients) setForm((f) => ({ ...f, recipientIds: existingRecipients }))
+  }, [existingRecipients])
+
+  // Attribute-based bulk selection: pick an attribute + value, then flip
+  // (toggle) everyone tagged with that value in the recipient checklist at
+  // once -- same pattern as Schedule.jsx's invitee picker and Tasks.jsx's
+  // assignee picker. Anyone already selected in the matched group gets
+  // deselected, anyone not yet selected gets selected.
+  const { data: attributes } = useQuery({
+    queryKey: ['member_attributes', 'for-announcement-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attributes').select('id, label').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: open && form.visibility === 'targeted',
+  })
+
+  const { data: attributeValues } = useQuery({
+    queryKey: ['member_attribute_values', filterAttrId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('member_attribute_values')
+        .select('id, value')
+        .eq('attribute_id', filterAttrId)
+        .order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: !!filterAttrId,
+  })
+
+  async function applyAttributeFilter() {
+    if (!filterValueId) return
+    const { data, error } = await supabase
+      .from('profile_attribute_values')
+      .select('profile_id')
+      .eq('attribute_value_id', filterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    const next = new Set(form.recipientIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setForm((f) => ({ ...f, recipientIds: Array.from(next) }))
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  function toggleRecipient(id) {
+    setForm((f) => ({
+      ...f,
+      recipientIds: f.recipientIds.includes(id) ? f.recipientIds.filter((x) => x !== id) : [...f.recipientIds, id],
+    }))
+  }
+
+  function selectAllRecipients() {
+    setForm((f) => ({ ...f, recipientIds: (members || []).map((m) => m.id) }))
+  }
+
+  function deselectAllRecipients() {
+    setForm((f) => ({ ...f, recipientIds: [] }))
+  }
 
   const save = useMutation({
     mutationFn: async () => {
       const finalCategory = form.category === 'other' && customCategory.trim() ? customCategory.trim() : form.category
+      const payload = { title: form.title, body: form.body, category: finalCategory, pinned: form.pinned, visibility: form.visibility }
+      const announcementId = mode === 'edit' ? announcement.id : crypto.randomUUID()
+
       if (mode === 'edit') {
-        const { error } = await supabase
-          .from('announcements')
-          .update({ title: form.title, body: form.body, category: finalCategory, pinned: form.pinned })
-          .eq('id', announcement.id)
+        const { error } = await supabase.from('announcements').update(payload).eq('id', announcementId)
         if (error) throw error
+        await supabase.from('announcement_recipients').delete().eq('announcement_id', announcementId)
       } else {
-        const { error } = await supabase.from('announcements').insert({ title: form.title, body: form.body, category: finalCategory, pinned: form.pinned })
+        const { error } = await supabase.from('announcements').insert({ id: announcementId, ...payload })
         if (error) throw error
+      }
+
+      if (form.visibility === 'targeted' && form.recipientIds.length > 0) {
+        const { error: recipientError } = await supabase
+          .from('announcement_recipients')
+          .insert(form.recipientIds.map((profile_id) => ({ announcement_id: announcementId, profile_id })))
+        if (recipientError) throw recipientError
       }
     },
     onSuccess: () => {
       toast.success(mode === 'edit' ? '更新しました' : 'お知らせを投稿しました')
       queryClient.invalidateQueries({ queryKey: ['announcements'] })
+      queryClient.invalidateQueries({ queryKey: ['announcement_recipients'] })
       if (mode === 'create') {
         setForm(EMPTY_FORM)
         setCustomCategory('')
+        setFilterAttrId('')
+        setFilterValueId('')
       }
       onOpenChange(false)
     },
@@ -111,6 +226,85 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
             <input type="checkbox" checked={form.pinned} onChange={(e) => setForm({ ...form, pinned: e.target.checked })} className="h-4 w-4 rounded" />
             上部に固定表示する
           </label>
+          <div className="space-y-1.5">
+            <Label>配信範囲</Label>
+            <Select value={form.visibility} onValueChange={(v) => setForm({ ...form, visibility: v })}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">全員に配信</SelectItem>
+                <SelectItem value="targeted">特定のメンバーのみ</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {form.visibility === 'targeted' && (
+            <div className="space-y-1.5">
+              <Label>配信するメンバー</Label>
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select
+                    value={filterAttrId}
+                    onValueChange={(v) => {
+                      setFilterAttrId(v)
+                      setFilterValueId('')
+                    }}
+                  >
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="属性を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributes?.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={filterValueId} onValueChange={setFilterValueId} disabled={!filterAttrId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="値を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributeValues?.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!filterValueId} onClick={applyAttributeFilter}>
+                    選択を切替
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={selectAllRecipients}>
+                  全員選択
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={deselectAllRecipients}>
+                  全員解除
+                </Button>
+              </div>
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
+                {members?.map((m) => (
+                  <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      checked={form.recipientIds.includes(m.id)}
+                      onChange={() => toggleRecipient(m.id)}
+                      className="h-4 w-4 rounded"
+                    />
+                    {m.full_name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <Button type="submit" className="w-full" disabled={save.isPending}>
             {mode === 'edit' ? '保存する' : '投稿する'}
           </Button>
@@ -134,6 +328,22 @@ export default function Announcements() {
       if (error) throw error
       return data
     },
+  })
+
+  // Recipient counts for targeted announcements -- RLS on announcement_recipients
+  // is executive-only (same gate as writing announcements), so this only runs
+  // for executives; officers won't see the breakdown even though they can see
+  // the "特定のメンバーのみ" badge itself.
+  const { data: recipientCounts } = useQuery({
+    queryKey: ['announcement_recipients', 'counts'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('announcement_recipients').select('announcement_id')
+      if (error) throw error
+      const counts = {}
+      for (const r of data) counts[r.announcement_id] = (counts[r.announcement_id] || 0) + 1
+      return counts
+    },
+    enabled: isExecutive,
   })
 
   const remove = useMutation({
@@ -187,6 +397,12 @@ export default function Announcements() {
                   <h3 className="font-bold">{a.title}</h3>
                 </div>
                 <div className="flex items-center gap-1.5">
+                  {a.visibility === 'targeted' && (
+                    <Badge variant="outline" className="gap-1">
+                      <Users className="h-3 w-3" />
+                      特定{isExecutive && recipientCounts?.[a.id] != null ? `${recipientCounts[a.id]}人` : ''}
+                    </Badge>
+                  )}
                   <Badge variant={CATEGORY_VARIANT[a.category] || 'secondary'}>{CATEGORY_LABEL[a.category] || a.category}</Badge>
                   {isExecutive && (
                     <>
