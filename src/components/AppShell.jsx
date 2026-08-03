@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
 import {
   Bike,
@@ -69,13 +70,44 @@ export default function AppShell({ user }) {
   const roleLabel = profile?.club_roles?.label_ja
   const isExecutive = profile?.club_roles?.tier === 'executive'
   const isOfficerPlus = ['executive', 'officer'].includes(profile?.club_roles?.tier)
+  const [backgroundUrl, setBackgroundUrl] = useState(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadBackground() {
+      if (!profile?.background_url) {
+        setBackgroundUrl(null)
+        return
+      }
+      const { data, error } = await supabase.storage.from('profile-backgrounds').createSignedUrl(profile.background_url, 60 * 60)
+      if (!cancelled && !error) setBackgroundUrl(data.signedUrl)
+    }
+    loadBackground()
+    return () => {
+      cancelled = true
+    }
+  }, [profile?.background_url])
 
   async function handleLogout() {
     await supabase.auth.signOut()
   }
 
+  // Personal background (set per-user in 設定 > 背景画像). Layered under a
+  // background-colored scrim at the same opacity everywhere so cards (which
+  // stay fully opaque via bg-card) remain the primary readable surface and
+  // any text sitting directly on the shell keeps enough contrast.
+  const shellStyle = backgroundUrl
+    ? {
+        backgroundImage: `linear-gradient(hsl(var(--background) / 0.9), hsl(var(--background) / 0.9)), url(${backgroundUrl})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundAttachment: 'fixed',
+        backgroundRepeat: 'no-repeat',
+      }
+    : undefined
+
   return (
-    <div className="min-h-svh md:flex">
+    <div className="min-h-svh md:flex" style={shellStyle}>
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
         <div className="flex items-center gap-2.5 px-6 py-6">

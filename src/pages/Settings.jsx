@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Bot, CalendarClock, Copy, Save } from 'lucide-react'
+import { Bot, CalendarClock, Copy, Image, RotateCcw, Save, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Button } from '@/components/ui/button'
@@ -71,6 +71,104 @@ function CalendarFeedSection({ profile }) {
   )
 }
 
+function BackgroundSection({ profile }) {
+  const queryClient = useQueryClient()
+  const [preview, setPreview] = useState(null)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadPreview() {
+      if (!profile?.background_url) {
+        setPreview(null)
+        return
+      }
+      const { data, error } = await supabase.storage.from('profile-backgrounds').createSignedUrl(profile.background_url, 60)
+      if (!cancelled && !error) setPreview(data.signedUrl)
+    }
+    loadPreview()
+    return () => {
+      cancelled = true
+    }
+  }, [profile?.background_url])
+
+  const upload = useMutation({
+    mutationFn: async (file) => {
+      const path = `${profile.id}/${file.name}`
+      const { error: uploadError } = await supabase.storage.from('profile-backgrounds').upload(path, file, { upsert: true })
+      if (uploadError) throw uploadError
+      const { error } = await supabase.from('profiles').update({ background_url: path }).eq('id', profile.id)
+      if (error) throw error
+      return path
+    },
+    onSuccess: () => {
+      toast.success('背景を設定しました')
+      queryClient.invalidateQueries({ queryKey: ['profile', profile.id] })
+    },
+    onError: (err) => toast.error(`アップロードに失敗しました: ${err.message}`),
+    onSettled: () => setBusy(false),
+  })
+
+  const reset = useMutation({
+    mutationFn: async () => {
+      const previousPath = profile.background_url
+      const { error } = await supabase.from('profiles').update({ background_url: null }).eq('id', profile.id)
+      if (error) throw error
+      if (previousPath) await supabase.storage.from('profile-backgrounds').remove([previousPath])
+    },
+    onSuccess: () => {
+      toast.success('デフォルトの背景に戻しました')
+      queryClient.invalidateQueries({ queryKey: ['profile', profile.id] })
+    },
+    onError: (err) => toast.error(`リセットに失敗しました: ${err.message}`),
+  })
+
+  function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setBusy(true)
+    upload.mutate(file)
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="mb-2 flex items-center gap-2">
+        <Image className="h-5 w-5 text-primary" />
+        <h2 className="font-bold">背景画像</h2>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">
+        自分だけの背景画像を設定できます。他のメンバーには表示されません。
+      </p>
+
+      {preview && (
+        <div
+          className="mb-4 h-32 w-full overflow-hidden rounded-xl border border-border/60 bg-cover bg-center"
+          style={{ backgroundImage: `url(${preview})` }}
+        />
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <label
+          htmlFor="background-upload"
+          className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-input px-3 py-2 text-sm font-medium hover:bg-muted/50"
+        >
+          <Upload className="h-4 w-4" />
+          {busy ? 'アップロード中...' : preview ? '画像を変更する' : '画像をアップロード'}
+        </label>
+        <input id="background-upload" type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={busy} />
+
+        {profile?.background_url && (
+          <Button type="button" variant="ghost" onClick={() => reset.mutate()} disabled={reset.isPending}>
+            <RotateCcw className="h-4 w-4" />
+            デフォルトに戻す
+          </Button>
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export default function Settings() {
   const { profile } = useOutletContext()
   const isExecutive = profile?.club_roles?.tier === 'executive'
@@ -109,7 +207,10 @@ export default function Settings() {
     return (
       <div className="mx-auto max-w-2xl px-5 py-8">
         <h1 className="mb-6 text-2xl font-black tracking-tight">設定</h1>
-        <CalendarFeedSection profile={profile} />
+        <div className="mb-6">
+          <CalendarFeedSection profile={profile} />
+        </div>
+        <BackgroundSection profile={profile} />
       </div>
     )
   }
@@ -120,6 +221,10 @@ export default function Settings() {
 
       <div className="mb-6">
         <CalendarFeedSection profile={profile} />
+      </div>
+
+      <div className="mb-6">
+        <BackgroundSection profile={profile} />
       </div>
 
       <div className="mb-2 flex items-center gap-2">
