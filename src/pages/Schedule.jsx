@@ -85,7 +85,19 @@ const RSVP_OPTIONS = [
   { value: 'not_attending', label: '不参加' },
 ]
 
-const EMPTY_FORM = { title: '', description: '', start_at: '', end_at: '', location: '', category: 'practice', visibility: 'all', inviteeIds: [], link: '' }
+const EMPTY_FORM = {
+  title: '',
+  description: '',
+  start_at: '',
+  end_at: '',
+  location: '',
+  category: 'practice',
+  visibility: 'all',
+  inviteeIds: [],
+  link: '',
+  rsvpDeadlineEnabled: false,
+  rsvp_deadline: '',
+}
 
 function EventAttachmentLink({ path }) {
   const [loading, setLoading] = useState(false)
@@ -122,9 +134,13 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
           visibility: event.visibility,
           inviteeIds: [],
           link: event.link || '',
+          rsvpDeadlineEnabled: !!event.rsvp_deadline,
+          rsvp_deadline: toLocalInput(event.rsvp_deadline),
         }
       : EMPTY_FORM
   )
+  const [filterAttrId, setFilterAttrId] = useState('')
+  const [filterValueId, setFilterValueId] = useState('')
   const [customCategory, setCustomCategory] = useState(
     mode === 'edit' && event.category && !CATEGORY_LABEL[event.category] ? event.category : ''
   )
@@ -155,6 +171,49 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
   useEffect(() => {
     if (existingInvitees) setForm((f) => ({ ...f, inviteeIds: existingInvitees }))
   }, [existingInvitees])
+
+  // Attribute-based bulk selection: pick an attribute + value, then add
+  // everyone tagged with that value to the invitee checklist at once. This
+  // only pre-checks matches -- the manual checklist below still lets the
+  // user add/remove individuals afterward.
+  const { data: attributes } = useQuery({
+    queryKey: ['member_attributes', 'for-invite-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attributes').select('id, label').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: open && form.visibility === 'invite_only',
+  })
+
+  const { data: attributeValues } = useQuery({
+    queryKey: ['member_attribute_values', filterAttrId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('member_attribute_values')
+        .select('id, value')
+        .eq('attribute_id', filterAttrId)
+        .order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: !!filterAttrId,
+  })
+
+  async function applyAttributeFilter() {
+    if (!filterValueId) return
+    const { data, error } = await supabase
+      .from('profile_attribute_values')
+      .select('profile_id')
+      .eq('attribute_value_id', filterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    setForm((f) => ({ ...f, inviteeIds: Array.from(new Set([...f.inviteeIds, ...ids])) }))
+    toast.success(`${ids.length}人を追加しました`)
+  }
 
   function toggleInvitee(id) {
     setForm((f) => ({
@@ -190,6 +249,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         visibility: form.visibility,
         link: form.link || null,
         attachment_path: attachmentPath,
+        rsvp_deadline: form.rsvpDeadlineEnabled && form.rsvp_deadline ? new Date(form.rsvp_deadline).toISOString() : null,
       }
 
       if (mode === 'edit') {
@@ -215,6 +275,8 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         setCustomCategory('')
         setFile(null)
         setRemoveAttachment(false)
+        setFilterAttrId('')
+        setFilterValueId('')
       }
       onOpenChange(false)
     },
@@ -327,9 +389,66 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
               </SelectContent>
             </Select>
           </div>
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded"
+                checked={form.rsvpDeadlineEnabled}
+                onChange={(e) => setForm({ ...form, rsvpDeadlineEnabled: e.target.checked })}
+              />
+              参加投票の期限を設定する
+            </label>
+            {form.rsvpDeadlineEnabled && (
+              <Input
+                type="datetime-local"
+                value={form.rsvp_deadline}
+                onChange={(e) => setForm({ ...form, rsvp_deadline: e.target.value })}
+              />
+            )}
+          </div>
           {form.visibility === 'invite_only' && (
             <div className="space-y-1.5">
               <Label>参加できるメンバー</Label>
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select
+                    value={filterAttrId}
+                    onValueChange={(v) => {
+                      setFilterAttrId(v)
+                      setFilterValueId('')
+                    }}
+                  >
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="属性を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributes?.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={filterValueId} onValueChange={setFilterValueId} disabled={!filterAttrId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="値を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributeValues?.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!filterValueId} onClick={applyAttributeFilter}>
+                    追加
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">該当メンバーを下のリストに一括追加します（追加後も個別に調整できます）</p>
+              </div>
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
                 {members?.map((m) => (
                   <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
@@ -355,7 +474,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
 }
 
 export default function Schedule() {
-  const { user, profile } = useOutletContext()
+  const { user, profile, isOfficerPlus } = useOutletContext()
   const isExecutive = profile?.club_roles?.tier === 'executive'
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
@@ -381,6 +500,55 @@ export default function Schedule() {
     },
     enabled: !!user,
   })
+
+  // Officer+ only: full member list + full invitee list, used to build the
+  // per-event "who's going / not going / hasn't voted" breakdown below.
+  const { data: allProfiles } = useQuery({
+    queryKey: ['profiles', 'rsvp-visibility'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name')
+      if (error) throw error
+      return data
+    },
+    enabled: !!isOfficerPlus,
+  })
+
+  const { data: allInvitees } = useQuery({
+    queryKey: ['event_invitees', 'all'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('event_invitees').select('event_id, profile_id')
+      if (error) throw error
+      return data
+    },
+    enabled: !!isOfficerPlus,
+  })
+
+  // For a given event, split the eligible pool (all members for
+  // visibility='all' events, invitees for invite_only) into three buckets
+  // by their event_registrations status. "undecided" and "no row at all"
+  // are both treated as 未回答 here -- neither is a firm answer.
+  function rsvpBreakdown(event) {
+    if (!allProfiles) return null
+    const poolIds =
+      event.visibility === 'all'
+        ? allProfiles.map((p) => p.id)
+        : (allInvitees || []).filter((i) => i.event_id === event.id).map((i) => i.profile_id)
+    const nameById = new Map(allProfiles.map((p) => [p.id, p.full_name]))
+    const statusByProfile = new Map(
+      (registrations || []).filter((r) => r.event_id === event.id).map((r) => [r.profile_id, r.status])
+    )
+    const attending = []
+    const notAttending = []
+    const noResponse = []
+    for (const id of poolIds) {
+      const member = { id, name: nameById.get(id) || '不明なメンバー' }
+      const status = statusByProfile.get(id)
+      if (status === 'attending') attending.push(member)
+      else if (status === 'not_attending') notAttending.push(member)
+      else noResponse.push(member)
+    }
+    return { attending, notAttending, noResponse }
+  }
 
   const rsvp = useMutation({
     mutationFn: async ({ eventId, status }) => {
@@ -539,6 +707,12 @@ export default function Schedule() {
                         <Users className="h-3.5 w-3.5" />
                         参加 {attendingCount(e.id)}人
                       </span>
+                      {e.rsvp_deadline && (
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3.5 w-3.5" />
+                          投票期限: {formatDateTime(e.rsvp_deadline)}
+                        </span>
+                      )}
                     </div>
                     {(e.link || e.attachment_path) && (
                       <div className="mt-1.5 flex flex-wrap items-center gap-3">
@@ -568,6 +742,46 @@ export default function Schedule() {
                   </Button>
                 ))}
               </div>
+              {isOfficerPlus && (
+                <details className="group mt-2 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
+                  <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-foreground">
+                    <span className="flex items-center gap-2">
+                      <UserRoundCheck className="h-3.5 w-3.5" />
+                      回答状況を見る（担当者以上限定）
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+                  </summary>
+                  {(() => {
+                    const breakdown = rsvpBreakdown(e)
+                    if (!breakdown) return <p className="mt-2">読み込み中...</p>
+                    return (
+                      <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                        <div>
+                          <p className="mb-1 font-medium text-foreground">参加（{breakdown.attending.length}）</p>
+                          {breakdown.attending.length === 0 && <p className="text-muted-foreground/70">なし</p>}
+                          {breakdown.attending.map((m) => (
+                            <p key={m.id}>{m.name}</p>
+                          ))}
+                        </div>
+                        <div>
+                          <p className="mb-1 font-medium text-foreground">不参加（{breakdown.notAttending.length}）</p>
+                          {breakdown.notAttending.length === 0 && <p className="text-muted-foreground/70">なし</p>}
+                          {breakdown.notAttending.map((m) => (
+                            <p key={m.id}>{m.name}</p>
+                          ))}
+                        </div>
+                        <div>
+                          <p className="mb-1 font-medium text-foreground">未回答（{breakdown.noResponse.length}）</p>
+                          {breakdown.noResponse.length === 0 && <p className="text-muted-foreground/70">なし</p>}
+                          {breakdown.noResponse.map((m) => (
+                            <p key={m.id}>{m.name}</p>
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })()}
+                </details>
+              )}
             </motion.div>
           )
         })}

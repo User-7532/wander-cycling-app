@@ -489,3 +489,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/update-member-status-attributes/deno.json"
 entrypoint = "./functions/update-member-status-attributes/index.ts"
+
+[functions.rsvp-reminder]
+enabled = true
+verify_jwt = false
+import_map = "./functions/rsvp-reminder/deno.json"
+entrypoint = "./functions/rsvp-reminder/index.ts"
