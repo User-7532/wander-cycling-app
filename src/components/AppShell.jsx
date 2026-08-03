@@ -107,6 +107,14 @@ export default function AppShell({ user }) {
         backgroundSize: 'cover',
         backgroundPosition: 'center',
         backgroundRepeat: 'no-repeat',
+        // Force this layer onto its own GPU compositing layer -- without
+        // this, `position: fixed` visibly lags/jumps for a frame during
+        // fast swipes and rubber-band overscroll on iOS Safari, since the
+        // browser otherwise has to repaint it relative to page content on
+        // every scroll frame instead of compositing it independently.
+        transform: 'translateZ(0)',
+        WebkitTransform: 'translateZ(0)',
+        willChange: 'transform',
       }
     : undefined
 
