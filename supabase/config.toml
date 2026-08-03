@@ -459,3 +459,9 @@ enabled = true
 verify_jwt = false
 import_map = "./functions/auto-complete-task/deno.json"
 entrypoint = "./functions/auto-complete-task/index.ts"
+
+[functions.calendar-feed]
+enabled = true
+verify_jwt = false
+import_map = "./functions/calendar-feed/deno.json"
+entrypoint = "./functions/calendar-feed/index.ts"
