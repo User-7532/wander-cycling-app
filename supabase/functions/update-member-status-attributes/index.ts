@@ -19,6 +19,18 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 //   - active_status flips to OB from September 1st of their 3rd academic
 //     year onward (Sept 1 of Y+2), independent of the grade label -- not
 //     derived from it.
+//
+// Separately: whenever this run flips a profile's active_status from
+// not-OB to OB for someone who currently holds executive tier (アプリ管理者
+// permissions, profiles.club_role_id -> club_roles.tier = 'executive'),
+// that's a real person "graduating" in the club's internal accounting
+// while still holding admin access. We push a LINE nudge to that person
+// and to every other current executive so a successor gets confirmed
+// before their involvement actually ends. This is naturally idempotent:
+// it only fires on the run where the stored active_status value actually
+// changes to OB, so re-running the same day is a no-op here too.
+
+const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 
 const supabase = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 
@@ -88,9 +100,29 @@ serve(async (req) => {
 
     const { data: profiles, error: profilesErr } = await supabase
       .from('profiles')
-      .select('id, cohort_year')
+      .select('id, full_name, cohort_year, club_role_id')
       .not('cohort_year', 'is', null)
     if (profilesErr) throw profilesErr
+
+    // Reverse lookup (value id -> label) for active_status, used below to
+    // tell whether a profile's *previous* active_status was already OB.
+    const activeLabelByValueId = new Map<string, string>()
+    for (const [label, id] of activeValueIdByLabel) activeLabelByValueId.set(id, label)
+
+    // Current executive-tier roster (アプリ管理者), independent of
+    // cohort_year -- this function never writes club_role_id, so this is
+    // simply "who holds admin access right now." Used both to check
+    // whether a newly-retired profile is one of them, and to know who to
+    // notify.
+    const { data: execRoles, error: execRolesErr } = await supabase.from('club_roles').select('id').eq('tier', 'executive')
+    if (execRolesErr) throw execRolesErr
+    const executiveRoleIds = new Set((execRoles ?? []).map((r) => r.id))
+
+    const { data: executiveProfiles, error: executiveProfilesErr } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in('club_role_id', [...executiveRoleIds])
+    if (executiveProfilesErr) throw executiveProfilesErr
 
     // Current assignments under either system attribute, for every profile
     // with a cohort_year, in one query -- diffed against the freshly
@@ -116,6 +148,11 @@ serve(async (req) => {
     let gradeUpdates = 0
     let activeUpdates = 0
     let skipped = 0
+
+    // Profiles whose active_status is newly flipping to OB *this run* (was
+    // not already OB) and who currently hold executive tier -- these are
+    // the people who need a succession nudge below.
+    const newlyRetiredExecutives: { id: string; full_name: string }[] = []
 
     for (const p of profiles ?? []) {
       const cohortYear = p.cohort_year as number
@@ -147,7 +184,8 @@ serve(async (req) => {
         gradeUpdates++
       }
 
-      if (currentActiveByProfile.get(p.id) !== desiredActiveValueId) {
+      const currentActiveValueId = currentActiveByProfile.get(p.id)
+      if (currentActiveValueId !== desiredActiveValueId) {
         const { error: delErr } = await supabase
           .from('profile_attribute_values')
           .delete()
@@ -159,6 +197,70 @@ serve(async (req) => {
           .insert({ profile_id: p.id, attribute_value_id: desiredActiveValueId })
         if (insErr) throw insErr
         activeUpdates++
+
+        const previousActiveLabel = currentActiveValueId ? activeLabelByValueId.get(currentActiveValueId) : undefined
+        if (activeLabel === 'OB' && previousActiveLabel !== 'OB' && executiveRoleIds.has(p.club_role_id)) {
+          newlyRetiredExecutives.push({ id: p.id, full_name: p.full_name })
+        }
+      }
+    }
+
+    // Succession nudge: for each profile that just auto-retired (OB) while
+    // still holding executive tier, LINE-push everyone who currently holds
+    // executive tier (including the retiree themself, since their
+    // club_role_id hasn't changed -- only their OB status has) so a
+    // successor gets confirmed before their admin access should lapse.
+    const successionNudges: Record<string, unknown> = {}
+    if (newlyRetiredExecutives.length > 0) {
+      const executiveNames = (executiveProfiles ?? []).map((e) => e.full_name)
+      const executiveIds = (executiveProfiles ?? []).map((e) => e.id)
+
+      const { data: identities, error: identitiesErr } = await supabase
+        .from('line_identities')
+        .select('profile_id, line_user_id')
+        .in('profile_id', executiveIds)
+      if (identitiesErr) throw identitiesErr
+      const lineUserIdByProfile = new Map((identities ?? []).map((i) => [i.profile_id, i.line_user_id]))
+
+      const accessToken = Deno.env.get('LINE_BOT_CHANNEL_ACCESS_TOKEN')!
+
+      for (const retiree of newlyRetiredExecutives) {
+        const text = [
+          `🎓 ${retiree.full_name}さんのステータスが自動的に「OB」に切り替わりました`,
+          `${retiree.full_name}さんは現在も「アプリ管理者」の権限を保持しています。後任のアプリ管理者が決まっているか、このまま権限を持ち続けて問題ないか、確認をお願いします。`,
+          '',
+          '現在のアプリ管理者:',
+          ...executiveNames.map((n) => `・${n}`),
+        ]
+          .join('\n')
+          .slice(0, 4900)
+
+        const notified: string[] = []
+        const noLineIdentity: string[] = []
+        const failed: Record<string, string> = {}
+
+        for (const exec of executiveProfiles ?? []) {
+          const lineUserId = lineUserIdByProfile.get(exec.id)
+          if (!lineUserId) {
+            console.log(`succession nudge: skipping ${exec.full_name} (${exec.id}) -- no linked LINE id`)
+            noLineIdentity.push(exec.full_name)
+            continue
+          }
+          const res = await fetch(LINE_PUSH_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+            body: JSON.stringify({ to: lineUserId, messages: [{ type: 'text', text }] }),
+          })
+          if (!res.ok) {
+            const errText = await res.text()
+            console.error(`succession nudge: LINE push to ${exec.full_name} (${exec.id}) failed:`, errText)
+            failed[exec.full_name] = errText
+            continue
+          }
+          notified.push(exec.full_name)
+        }
+
+        successionNudges[retiree.id] = { retiree: retiree.full_name, notified, noLineIdentity, failed }
       }
     }
 
@@ -170,6 +272,7 @@ serve(async (req) => {
         gradeUpdates,
         activeUpdates,
         skipped,
+        successionNudges,
       }),
       { headers: { 'Content-Type': 'application/json' } },
     )
