@@ -111,9 +111,7 @@ export default function AppShell({ user }) {
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
         <div className="flex items-center gap-2.5 px-6 py-6">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-            <Bike className="h-5 w-5" />
-          </div>
+          <img src="/icon-128.png" alt="WanderCycling" className="h-10 w-10 rounded-xl object-cover" />
           <div>
             <p className="text-base font-black leading-tight tracking-tight">WanderCycling</p>
             <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">University Club</p>
@@ -153,9 +151,7 @@ export default function AppShell({ user }) {
       <header className="sticky top-0 z-20 border-b border-border/60 bg-background/80 backdrop-blur-md md:hidden">
         <div className="flex items-center justify-between px-5 py-4">
           <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-primary text-primary-foreground">
-              <Bike className="h-5 w-5" />
-            </div>
+            <img src="/icon-128.png" alt="WanderCycling" className="h-9 w-9 rounded-xl object-cover" />
             <span className="text-lg font-black tracking-tight">WanderCycling</span>
           </div>
           <div className="flex items-center gap-1.5">
