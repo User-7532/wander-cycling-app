@@ -95,6 +95,8 @@ const EMPTY_FORM = {
   link: '',
   rsvpDeadlineEnabled: false,
   rsvp_deadline: '',
+  rsvpRestricted: false,
+  rsvpViewerIds: [],
 }
 
 function EventAttachmentLink({ path }) {
@@ -134,11 +136,15 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
           link: event.link || '',
           rsvpDeadlineEnabled: !!event.rsvp_deadline,
           rsvp_deadline: toLocalInput(event.rsvp_deadline),
+          rsvpRestricted: event.rsvp_visibility === 'restricted',
+          rsvpViewerIds: [],
         }
       : EMPTY_FORM
   )
   const [filterAttrId, setFilterAttrId] = useState('')
   const [filterValueId, setFilterValueId] = useState('')
+  const [rsvpFilterAttrId, setRsvpFilterAttrId] = useState('')
+  const [rsvpFilterValueId, setRsvpFilterValueId] = useState('')
   const [customCategory, setCustomCategory] = useState(
     mode === 'edit' && event.category && !CATEGORY_LABEL[event.category] ? event.category : ''
   )
@@ -153,7 +159,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: open && form.visibility === 'invite_only',
+    enabled: open && (form.visibility === 'invite_only' || form.rsvpRestricted),
   })
 
   const { data: existingInvitees } = useQuery({
@@ -170,6 +176,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     if (existingInvitees) setForm((f) => ({ ...f, inviteeIds: existingInvitees }))
   }, [existingInvitees])
 
+  const { data: existingRsvpViewers } = useQuery({
+    queryKey: ['event_rsvp_viewers', event?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('event_rsvp_viewers').select('profile_id').eq('event_id', event.id)
+      if (error) throw error
+      return data.map((r) => r.profile_id)
+    },
+    enabled: mode === 'edit' && open && event.rsvp_visibility === 'restricted',
+  })
+
+  useEffect(() => {
+    if (existingRsvpViewers) setForm((f) => ({ ...f, rsvpViewerIds: existingRsvpViewers }))
+  }, [existingRsvpViewers])
+
   // Attribute-based bulk selection: pick an attribute + value, then flip
   // (toggle) everyone tagged with that value in the invitee checklist at
   // once -- anyone already selected in that matched group gets deselected,
@@ -183,7 +203,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: open && form.visibility === 'invite_only',
+    enabled: open && (form.visibility === 'invite_only' || form.rsvpRestricted),
   })
 
   const { data: attributeValues } = useQuery({
@@ -198,6 +218,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       return data
     },
     enabled: !!filterAttrId,
+  })
+
+  const { data: rsvpAttributeValues } = useQuery({
+    queryKey: ['member_attribute_values', rsvpFilterAttrId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('member_attribute_values')
+        .select('id, value')
+        .eq('attribute_id', rsvpFilterAttrId)
+        .order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: !!rsvpFilterAttrId,
   })
 
   async function applyAttributeFilter() {
@@ -242,6 +276,50 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     setForm((f) => ({ ...f, inviteeIds: [] }))
   }
 
+  // Same attribute-filter-flip + manual checklist pattern as the invitee
+  // picker above, but building the event_rsvp_viewers list instead.
+  async function applyRsvpAttributeFilter() {
+    if (!rsvpFilterValueId) return
+    const { data, error } = await supabase
+      .from('profile_attribute_values')
+      .select('profile_id')
+      .eq('attribute_value_id', rsvpFilterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    const next = new Set(form.rsvpViewerIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setForm((f) => ({ ...f, rsvpViewerIds: Array.from(next) }))
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  function toggleRsvpViewer(id) {
+    setForm((f) => ({
+      ...f,
+      rsvpViewerIds: f.rsvpViewerIds.includes(id) ? f.rsvpViewerIds.filter((x) => x !== id) : [...f.rsvpViewerIds, id],
+    }))
+  }
+
+  function selectAllRsvpViewers() {
+    setForm((f) => ({ ...f, rsvpViewerIds: (members || []).map((m) => m.id) }))
+  }
+
+  function deselectAllRsvpViewers() {
+    setForm((f) => ({ ...f, rsvpViewerIds: [] }))
+  }
+
   const save = useMutation({
     mutationFn: async () => {
       const finalCategory = form.category === 'other' && customCategory.trim() ? customCategory.trim() : form.category
@@ -270,12 +348,16 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         link: form.link || null,
         attachment_path: attachmentPath,
         rsvp_deadline: form.rsvpDeadlineEnabled && form.rsvp_deadline ? new Date(form.rsvp_deadline).toISOString() : null,
+        rsvp_visibility: form.rsvpRestricted ? 'restricted' : 'all',
       }
 
       if (mode === 'edit') {
         const { error } = await supabase.from('club_events').update(payload).eq('id', eventId)
         if (error) throw error
         await supabase.from('event_invitees').delete().eq('event_id', eventId)
+        // Clear any stale viewer rows too -- covers both "still restricted,
+        // rebuild the list" and "was restricted, now reopened" cases.
+        await supabase.from('event_rsvp_viewers').delete().eq('event_id', eventId)
       } else {
         const { error } = await supabase.from('club_events').insert({ id: eventId, ...payload })
         if (error) throw error
@@ -285,11 +367,19 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         const { error: inviteError } = await supabase.from('event_invitees').insert(form.inviteeIds.map((profile_id) => ({ event_id: eventId, profile_id })))
         if (inviteError) throw inviteError
       }
+
+      if (form.rsvpRestricted && form.rsvpViewerIds.length > 0) {
+        const { error: viewerError } = await supabase
+          .from('event_rsvp_viewers')
+          .insert(form.rsvpViewerIds.map((profile_id) => ({ event_id: eventId, profile_id })))
+        if (viewerError) throw viewerError
+      }
     },
     onSuccess: () => {
       toast.success(mode === 'edit' ? '更新しました' : '予定を追加しました')
       queryClient.invalidateQueries({ queryKey: ['club_events'] })
       queryClient.invalidateQueries({ queryKey: ['event_invitees'] })
+      queryClient.invalidateQueries({ queryKey: ['event_rsvp_viewers'] })
       if (mode === 'create') {
         setForm(EMPTY_FORM)
         setCustomCategory('')
@@ -297,6 +387,8 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         setRemoveAttachment(false)
         setFilterAttrId('')
         setFilterValueId('')
+        setRsvpFilterAttrId('')
+        setRsvpFilterValueId('')
       }
       onOpenChange(false)
     },
@@ -494,6 +586,87 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
               </div>
             </div>
           )}
+          <div className="space-y-1.5">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded"
+                checked={form.rsvpRestricted}
+                onChange={(e) => setForm({ ...form, rsvpRestricted: e.target.checked })}
+              />
+              回答状況の閲覧を制限する
+            </label>
+            <p className="text-xs text-muted-foreground">
+              チェックしない場合、この予定を見られる人は誰でも回答状況（参加/不参加/未回答の内訳）を見られます。制限すると、選んだメンバー（と役員）だけが見られるようになります。
+            </p>
+          </div>
+          {form.rsvpRestricted && (
+            <div className="space-y-1.5">
+              <Label>回答状況を見られるメンバー</Label>
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select
+                    value={rsvpFilterAttrId}
+                    onValueChange={(v) => {
+                      setRsvpFilterAttrId(v)
+                      setRsvpFilterValueId('')
+                    }}
+                  >
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="属性を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributes?.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={rsvpFilterValueId} onValueChange={setRsvpFilterValueId} disabled={!rsvpFilterAttrId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="値を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rsvpAttributeValues?.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.value}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!rsvpFilterValueId} onClick={applyRsvpAttributeFilter}>
+                    選択を切替
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={selectAllRsvpViewers}>
+                  全員選択
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={deselectAllRsvpViewers}>
+                  全員解除
+                </Button>
+              </div>
+              <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
+                {members?.map((m) => (
+                  <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
+                    <input
+                      type="checkbox"
+                      checked={form.rsvpViewerIds.includes(m.id)}
+                      onChange={() => toggleRsvpViewer(m.id)}
+                      className="h-4 w-4 rounded"
+                    />
+                    {m.full_name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
           <Button type="submit" className="w-full" disabled={save.isPending}>
             {mode === 'edit' ? '保存する' : '追加する'}
           </Button>
@@ -504,7 +677,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
 }
 
 export default function Schedule() {
-  const { user, profile, isOfficerPlus } = useOutletContext()
+  const { user, profile } = useOutletContext()
   const isExecutive = profile?.club_roles?.tier === 'executive'
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
@@ -531,16 +704,23 @@ export default function Schedule() {
     enabled: !!user,
   })
 
-  // Officer+ only: full member list + full invitee list, used to build the
-  // per-event "who's going / not going / hasn't voted" breakdown below.
+  // Full member list + full invitee list, used to build the per-event
+  // "who's going / not going / hasn't voted" breakdown below. The RSVP
+  // breakdown is now open to everyone by default (not just officer+), so
+  // this needs to work for any signed-in member -- profiles RLS normally
+  // restricts a regular member to reading only their own row, so we go
+  // through profiles_directory() (see 0013_profiles_directory.sql), a
+  // SECURITY DEFINER RPC that already exists for exactly this purpose
+  // (name/avatar/year roster, no sensitive columns) rather than querying
+  // the profiles table directly.
   const { data: allProfiles } = useQuery({
     queryKey: ['profiles', 'rsvp-visibility'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('profiles').select('id, full_name').order('full_name')
+      const { data, error } = await supabase.rpc('profiles_directory')
       if (error) throw error
       return data
     },
-    enabled: !!isOfficerPlus,
+    enabled: !!user,
   })
 
   const { data: allInvitees } = useQuery({
@@ -550,8 +730,33 @@ export default function Schedule() {
       if (error) throw error
       return data
     },
-    enabled: !!isOfficerPlus,
+    enabled: !!user,
   })
+
+  // Which restricted events the current user is an approved RSVP-breakdown
+  // viewer for. event_rsvp_viewers is readable by any signed-in member (see
+  // 0042_rsvp_visibility.sql), so this is a simple self-filtered query.
+  const { data: myRsvpViewerRows } = useQuery({
+    queryKey: ['event_rsvp_viewers', 'mine', user?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('event_rsvp_viewers').select('event_id').eq('profile_id', user.id)
+      if (error) throw error
+      return data
+    },
+    enabled: !!user,
+  })
+
+  const myRsvpViewerEventIds = new Set((myRsvpViewerRows || []).map((r) => r.event_id))
+
+  // Default (rsvp_visibility='all'): open to anyone who can see the event.
+  // Restricted: only the hand-picked viewer list, plus executives as an
+  // administrative override (same convention as is_executive() elsewhere,
+  // e.g. Account Directory / Finance -- full access to sensitive views).
+  function canViewRsvpBreakdown(event) {
+    if (event.rsvp_visibility !== 'restricted') return true
+    if (isExecutive) return true
+    return myRsvpViewerEventIds.has(event.id)
+  }
 
   // For a given event, split the eligible pool (all members for
   // visibility='all' events, invitees for invite_only) into three buckets
@@ -772,12 +977,12 @@ export default function Schedule() {
                   </Button>
                 ))}
               </div>
-              {isOfficerPlus && (
+              {canViewRsvpBreakdown(e) && (
                 <details className="group mt-2 rounded-xl border border-dashed px-3 py-2 text-xs text-muted-foreground">
                   <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-foreground">
                     <span className="flex items-center gap-2">
                       <UserRoundCheck className="h-3.5 w-3.5" />
-                      回答状況を見る（担当者以上限定）
+                      回答状況を見る（権限が必要なことがあります）
                     </span>
                     <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
                   </summary>
