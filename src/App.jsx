@@ -1,24 +1,28 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { Loader2 } from 'lucide-react'
 import { supabase } from '@/supabase'
 import AppShell from '@/components/AppShell'
 import Login from '@/pages/Login'
 import Home from '@/pages/Home'
-import Schedule from '@/pages/Schedule'
-import Announcements from '@/pages/Announcements'
-import Tasks from '@/pages/Tasks'
-import StatusBoard from '@/pages/StatusBoard'
-import Members from '@/pages/Members'
-import Attributes from '@/pages/Attributes'
-import Emergency from '@/pages/Emergency'
-import Settings from '@/pages/Settings'
-import Finance from '@/pages/Finance'
-import Resources from '@/pages/Resources'
-import AccountDirectory from '@/pages/AccountDirectory'
-import SiteMap from '@/pages/SiteMap'
-import More from '@/pages/More'
 import AuthCallback from '@/pages/AuthCallback'
+
+// Lazy-loaded: every page beyond the login/home landing path, so a member
+// only downloads the code for pages they actually visit instead of the
+// whole app's JS up front.
+const Schedule = lazy(() => import('@/pages/Schedule'))
+const Announcements = lazy(() => import('@/pages/Announcements'))
+const Tasks = lazy(() => import('@/pages/Tasks'))
+const StatusBoard = lazy(() => import('@/pages/StatusBoard'))
+const Members = lazy(() => import('@/pages/Members'))
+const Attributes = lazy(() => import('@/pages/Attributes'))
+const Emergency = lazy(() => import('@/pages/Emergency'))
+const Settings = lazy(() => import('@/pages/Settings'))
+const Finance = lazy(() => import('@/pages/Finance'))
+const Resources = lazy(() => import('@/pages/Resources'))
+const AccountDirectory = lazy(() => import('@/pages/AccountDirectory'))
+const SiteMap = lazy(() => import('@/pages/SiteMap'))
+const More = lazy(() => import('@/pages/More'))
 
 function Splash() {
   return (
@@ -48,30 +52,32 @@ function App() {
   if (loading) return <Splash />
 
   return (
-    <Routes>
-      <Route path="/auth/callback" element={<AuthCallback />} />
-      {!session ? (
-        <Route path="*" element={<Login />} />
-      ) : (
-        <Route element={<AppShell user={session.user} />}>
-          <Route path="/" element={<Home />} />
-          <Route path="/schedule" element={<Schedule />} />
-          <Route path="/announcements" element={<Announcements />} />
-          <Route path="/tasks" element={<Tasks />} />
-          <Route path="/board" element={<StatusBoard />} />
-          <Route path="/resources" element={<Resources />} />
-          <Route path="/members" element={<Members />} />
-          <Route path="/attributes" element={<Attributes />} />
-          <Route path="/emergency" element={<Emergency />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="/finance" element={<Finance />} />
-          <Route path="/accounts" element={<AccountDirectory />} />
-          <Route path="/sitemap" element={<SiteMap />} />
-          <Route path="/more" element={<More />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Route>
-      )}
-    </Routes>
+    <Suspense fallback={<Splash />}>
+      <Routes>
+        <Route path="/auth/callback" element={<AuthCallback />} />
+        {!session ? (
+          <Route path="*" element={<Login />} />
+        ) : (
+          <Route element={<AppShell user={session.user} />}>
+            <Route path="/" element={<Home />} />
+            <Route path="/schedule" element={<Schedule />} />
+            <Route path="/announcements" element={<Announcements />} />
+            <Route path="/tasks" element={<Tasks />} />
+            <Route path="/board" element={<StatusBoard />} />
+            <Route path="/resources" element={<Resources />} />
+            <Route path="/members" element={<Members />} />
+            <Route path="/attributes" element={<Attributes />} />
+            <Route path="/emergency" element={<Emergency />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/finance" element={<Finance />} />
+            <Route path="/accounts" element={<AccountDirectory />} />
+            <Route path="/sitemap" element={<SiteMap />} />
+            <Route path="/more" element={<More />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        )}
+      </Routes>
+    </Suspense>
   )
 }
 
