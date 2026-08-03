@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Bike, MessageCircle, ChevronDown, Loader2 } from 'lucide-react'
+import { MessageCircle, ChevronDown, Loader2 } from 'lucide-react'
 import { supabase } from '@/supabase'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -49,9 +49,11 @@ export default function Login() {
         className="w-full max-w-sm"
       >
         <div className="rounded-3xl border border-white/60 bg-card/90 p-8 shadow-xl shadow-primary/5 backdrop-blur-sm">
-          <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/30">
-            <Bike className="h-7 w-7" />
-          </div>
+          <img
+            src="/icon-128.png"
+            alt="WanderCycling"
+            className="mx-auto mb-5 h-20 w-20 rounded-2xl border border-border/60 bg-white object-cover shadow-lg shadow-primary/20"
+          />
 
           <div className="mb-8 text-center">
             <h1 className="text-2xl font-black tracking-tight">WanderCycling</h1>
