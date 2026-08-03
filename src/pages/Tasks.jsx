@@ -46,12 +46,17 @@ function isOverdue(task) {
   return task.status !== 'done' && !!task.due_at && new Date(task.due_at).getTime() < Date.now()
 }
 
+const EMPTY_FILTER = { attributeId: '', valueId: '' }
+
 function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(
     mode === 'edit'
       ? { title: task.title, description: task.description || '', assigned_to: task.assigned_to || '', priority: task.priority, due_at: toLocalInputValue(task.due_at) }
       : EMPTY_FORM
   )
+  const [bulkMode, setBulkMode] = useState(false)
+  const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
+  const [deselectedIds, setDeselectedIds] = useState(new Set())
   const queryClient = useQueryClient()
 
   const save = useMutation({
@@ -75,6 +80,108 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
   })
 
+  // Bulk-create mode: pick an attribute+value filter (member_attributes / member_attribute_values),
+  // resolve to matching profiles via profile_attribute_values, then insert one tasks row per profile.
+  const { data: attributes } = useQuery({
+    queryKey: ['member_attributes'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attributes').select('id, key, label').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: mode === 'create' && bulkMode,
+  })
+
+  const { data: attributeValues } = useQuery({
+    queryKey: ['member_attribute_values'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('id, attribute_id, value').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: mode === 'create' && bulkMode,
+  })
+
+  const validFilters = filters.filter((f) => f.attributeId && f.valueId)
+  const activeValueIds = validFilters.map((f) => f.valueId)
+  const filterKey = activeValueIds.join(',')
+
+  const { data: matchedProfiles, isFetching: matchingLoading } = useQuery({
+    queryKey: ['bulk-task-candidates', filterKey],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profile_attribute_values')
+        .select('profile_id, attribute_value_id, profile:profiles(id, full_name)')
+        .in('attribute_value_id', activeValueIds)
+      if (error) throw error
+      const requiredIds = new Set(activeValueIds)
+      const byProfile = new Map()
+      for (const row of data) {
+        if (!row.profile) continue
+        const entry = byProfile.get(row.profile_id) || { profile: row.profile, values: new Set() }
+        entry.values.add(row.attribute_value_id)
+        byProfile.set(row.profile_id, entry)
+      }
+      return [...byProfile.values()]
+        .filter((entry) => [...requiredIds].every((id) => entry.values.has(id)))
+        .map((entry) => entry.profile)
+        .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ja'))
+    },
+    enabled: mode === 'create' && bulkMode && validFilters.length > 0 && validFilters.length === filters.length,
+  })
+
+  // Reset manual deselection whenever the filter combination changes, following React's
+  // "adjust state during render" pattern (cheaper than useEffect, avoids an extra render).
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey)
+  if (filterKey !== lastFilterKey) {
+    setLastFilterKey(filterKey)
+    setDeselectedIds(new Set())
+  }
+
+  const selectedProfiles = (matchedProfiles ?? []).filter((p) => !deselectedIds.has(p.id))
+
+  function updateFilter(idx, patch) {
+    setFilters((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
+  }
+  function addFilter() {
+    setFilters((prev) => [...prev, { ...EMPTY_FILTER }])
+  }
+  function removeFilter(idx) {
+    setFilters((prev) => prev.filter((_, i) => i !== idx))
+  }
+  function toggleProfile(id) {
+    setDeselectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const bulkSave = useMutation({
+    mutationFn: async () => {
+      const rows = selectedProfiles.map((p) => ({
+        title: form.title,
+        description: form.description || null,
+        assigned_to: p.id,
+        priority: form.priority,
+        due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+      }))
+      const { error } = await supabase.from('tasks').insert(rows)
+      if (error) throw error
+      return rows.length
+    },
+    onSuccess: (count) => {
+      toast.success(`${count}件のタスクを追加しました`)
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
+      setForm(EMPTY_FORM)
+      setBulkMode(false)
+      setFilters([{ ...EMPTY_FILTER }])
+      onOpenChange(false)
+    },
+    onError: (err) => toast.error(`追加に失敗しました: ${err.message}`),
+  })
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
@@ -85,10 +192,24 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         <form
           onSubmit={(e) => {
             e.preventDefault()
-            save.mutate()
+            if (mode === 'create' && bulkMode) {
+              bulkSave.mutate()
+            } else {
+              save.mutate()
+            }
           }}
           className="space-y-3"
         >
+          {mode === 'create' && (
+            <div className="flex gap-2">
+              <Button type="button" size="sm" variant={!bulkMode ? 'default' : 'outline'} onClick={() => setBulkMode(false)}>
+                個人に割り当て
+              </Button>
+              <Button type="button" size="sm" variant={bulkMode ? 'default' : 'outline'} onClick={() => setBulkMode(true)}>
+                グループへ一括作成
+              </Button>
+            </div>
+          )}
           <div className="space-y-1.5">
             <Label htmlFor="t-title">タイトル</Label>
             <Input id="t-title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
@@ -97,21 +218,86 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
             <Label htmlFor="t-desc">詳細</Label>
             <Textarea id="t-desc" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
-          <div className="space-y-1.5">
-            <Label>担当者</Label>
-            <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
-              <SelectTrigger>
-                <SelectValue placeholder="選択してください" />
-              </SelectTrigger>
-              <SelectContent>
-                {members?.map((m) => (
-                  <SelectItem key={m.id} value={m.id}>
-                    {m.full_name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
+          {!(mode === 'create' && bulkMode) ? (
+            <div className="space-y-1.5">
+              <Label>担当者</Label>
+              <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="選択してください" />
+                </SelectTrigger>
+                <SelectContent>
+                  {members?.map((m) => (
+                    <SelectItem key={m.id} value={m.id}>
+                      {m.full_name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          ) : (
+            <div className="space-y-3 rounded-lg border p-3">
+              <Label>対象条件</Label>
+              {filters.map((f, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Select value={f.attributeId} onValueChange={(v) => updateFilter(idx, { attributeId: v, valueId: '' })}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="属性" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributes?.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={f.valueId} onValueChange={(v) => updateFilter(idx, { valueId: v })} disabled={!f.attributeId}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="値" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributeValues
+                        ?.filter((v) => v.attribute_id === f.attributeId)
+                        .map((v) => (
+                          <SelectItem key={v.id} value={v.id}>
+                            {v.value}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  {filters.length > 1 && (
+                    <button type="button" onClick={() => removeFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <Button type="button" size="sm" variant="outline" onClick={addFilter}>
+                条件を追加（AND）
+              </Button>
+
+              <div className="space-y-1.5 pt-2">
+                <Label>
+                  対象者プレビュー
+                  {matchedProfiles ? `（${selectedProfiles.length}人選択中 / ${matchedProfiles.length}人該当）` : ''}
+                </Label>
+                {matchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
+                {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
+                  <p className="text-xs text-muted-foreground">該当する部員がいません</p>
+                )}
+                {matchedProfiles?.length > 0 && (
+                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+                    {matchedProfiles.map((p) => (
+                      <label key={p.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={!deselectedIds.has(p.id)} onChange={() => toggleProfile(p.id)} />
+                        {p.full_name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>優先度</Label>
@@ -133,8 +319,12 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               <Input id="t-due" type="datetime-local" value={form.due_at} onChange={(e) => setForm({ ...form, due_at: e.target.value })} />
             </div>
           </div>
-          <Button type="submit" className="w-full" disabled={save.isPending}>
-            {mode === 'edit' ? '保存する' : '追加する'}
+          <Button
+            type="submit"
+            className="w-full"
+            disabled={save.isPending || bulkSave.isPending || (mode === 'create' && bulkMode && selectedProfiles.length === 0)}
+          >
+            {mode === 'edit' ? '保存する' : mode === 'create' && bulkMode ? `${selectedProfiles.length}人にタスクを作成` : '追加する'}
           </Button>
         </form>
       </DialogContent>
