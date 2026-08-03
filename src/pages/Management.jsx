@@ -1,10 +1,11 @@
 import { Link } from 'react-router-dom'
-import { Bot, ChevronRight, KeyRound, Wallet } from 'lucide-react'
+import { Bot, ChevronRight, KeyRound, Tags, Wallet } from 'lucide-react'
 import { Card } from '@/components/ui/card'
 
 const ITEMS = [
   { to: '/finance', label: '会計・会費', icon: Wallet },
   { to: '/accounts', label: 'アカウント管理', icon: KeyRound },
+  { to: '/attributes', label: '属性管理', icon: Tags },
   { to: '/settings', label: 'AI秘書の設定', icon: Bot },
 ]
 

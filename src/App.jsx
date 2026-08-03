@@ -10,6 +10,7 @@ import Announcements from '@/pages/Announcements'
 import Tasks from '@/pages/Tasks'
 import StatusBoard from '@/pages/StatusBoard'
 import Members from '@/pages/Members'
+import Attributes from '@/pages/Attributes'
 import Emergency from '@/pages/Emergency'
 import Settings from '@/pages/Settings'
 import Finance from '@/pages/Finance'
@@ -61,6 +62,7 @@ function App() {
           <Route path="/board" element={<StatusBoard />} />
           <Route path="/resources" element={<Resources />} />
           <Route path="/members" element={<Members />} />
+          <Route path="/attributes" element={<Attributes />} />
           <Route path="/emergency" element={<Emergency />} />
           <Route path="/management" element={<Management />} />
           <Route path="/settings" element={<Settings />} />
