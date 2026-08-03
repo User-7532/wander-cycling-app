@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Calendar, MapPin, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
+import { Calendar, Clock, Link2, MapPin, Paperclip, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -54,19 +54,59 @@ function dateBoxParts(value) {
   return { month: d.toLocaleDateString('ja-JP', { month: 'short' }), day: d.getDate() }
 }
 
+// Convert a stored UTC ISO timestamp into the "YYYY-MM-DDTHH:mm" format
+// expected by <input type="datetime-local">, in the browser's local time.
+function toLocalInput(value) {
+  if (!value) return ''
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+}
+
+function formatDateTime(value) {
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return ''
+  return d.toLocaleString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
+function formatEndTime(startValue, endValue) {
+  const start = new Date(startValue)
+  const end = new Date(endValue)
+  if (Number.isNaN(end.getTime())) return ''
+  const sameDay = start.toDateString() === end.toDateString()
+  return sameDay
+    ? end.toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit' })
+    : end.toLocaleString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
 const RSVP_OPTIONS = [
   { value: 'attending', label: '参加' },
   { value: 'undecided', label: '未定' },
   { value: 'not_attending', label: '不参加' },
 ]
 
-const EMPTY_FORM = { title: '', description: '', start_date: '', end_date: '', location: '', category: 'practice', visibility: 'all', inviteeIds: [] }
+const EMPTY_FORM = { title: '', description: '', start_at: '', end_at: '', location: '', category: 'practice', visibility: 'all', inviteeIds: [], link: '' }
 
-function formatDate(value) {
-  if (!value) return ''
-  const d = new Date(value)
-  if (Number.isNaN(d.getTime())) return value
-  return d.toLocaleDateString('ja-JP', { month: 'short', day: 'numeric', weekday: 'short' })
+function EventAttachmentLink({ path }) {
+  const [loading, setLoading] = useState(false)
+
+  async function open() {
+    setLoading(true)
+    const { data, error } = await supabase.storage.from('event-attachments').createSignedUrl(path, 60)
+    setLoading(false)
+    if (error) {
+      toast.error('添付ファイルの取得に失敗しました')
+      return
+    }
+    window.open(data.signedUrl, '_blank', 'noopener,noreferrer')
+  }
+
+  return (
+    <button type="button" onClick={open} disabled={loading} className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+      <Paperclip className="h-3.5 w-3.5" />
+      添付ファイルを見る
+    </button>
+  )
 }
 
 function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
@@ -75,15 +115,21 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       ? {
           title: event.title,
           description: event.description || '',
-          start_date: event.start_date,
-          end_date: event.end_date || '',
+          start_at: toLocalInput(event.start_at),
+          end_at: toLocalInput(event.end_at),
           location: event.location || '',
-          category: event.category,
+          category: CATEGORY_LABEL[event.category] ? event.category : 'other',
           visibility: event.visibility,
           inviteeIds: [],
+          link: event.link || '',
         }
       : EMPTY_FORM
   )
+  const [customCategory, setCustomCategory] = useState(
+    mode === 'edit' && event.category && !CATEGORY_LABEL[event.category] ? event.category : ''
+  )
+  const [file, setFile] = useState(null)
+  const [removeAttachment, setRemoveAttachment] = useState(false)
   const queryClient = useQueryClient()
 
   const { data: members } = useQuery({
@@ -119,25 +165,40 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
 
   const save = useMutation({
     mutationFn: async () => {
+      const finalCategory = form.category === 'other' && customCategory.trim() ? customCategory.trim() : form.category
+      const eventId = mode === 'edit' ? event.id : crypto.randomUUID()
+
+      // Resolve the attachment: keep existing, remove, or upload a replacement.
+      let attachmentPath = mode === 'edit' ? event.attachment_path ?? null : null
+      if (removeAttachment) attachmentPath = null
+      if (file) {
+        attachmentPath = `${eventId}/${file.name}`
+        const { error: uploadError } = await supabase.storage.from('event-attachments').upload(attachmentPath, file, { upsert: true })
+        if (uploadError) throw uploadError
+      }
+      if (mode === 'edit' && event.attachment_path && event.attachment_path !== attachmentPath) {
+        await supabase.storage.from('event-attachments').remove([event.attachment_path])
+      }
+
       const payload = {
         title: form.title,
         description: form.description || null,
-        start_date: form.start_date,
-        end_date: form.end_date || null,
+        start_at: form.start_at ? new Date(form.start_at).toISOString() : null,
+        end_at: form.end_at ? new Date(form.end_at).toISOString() : null,
         location: form.location || null,
-        category: form.category,
+        category: finalCategory,
         visibility: form.visibility,
+        link: form.link || null,
+        attachment_path: attachmentPath,
       }
 
-      let eventId = event?.id
       if (mode === 'edit') {
         const { error } = await supabase.from('club_events').update(payload).eq('id', eventId)
         if (error) throw error
         await supabase.from('event_invitees').delete().eq('event_id', eventId)
       } else {
-        const { data: created, error } = await supabase.from('club_events').insert(payload).select('id').single()
+        const { error } = await supabase.from('club_events').insert({ id: eventId, ...payload })
         if (error) throw error
-        eventId = created.id
       }
 
       if (form.visibility === 'invite_only' && form.inviteeIds.length > 0) {
@@ -149,7 +210,12 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       toast.success(mode === 'edit' ? '更新しました' : '予定を追加しました')
       queryClient.invalidateQueries({ queryKey: ['club_events'] })
       queryClient.invalidateQueries({ queryKey: ['event_invitees'] })
-      if (mode === 'create') setForm(EMPTY_FORM)
+      if (mode === 'create') {
+        setForm(EMPTY_FORM)
+        setCustomCategory('')
+        setFile(null)
+        setRemoveAttachment(false)
+      }
       onOpenChange(false)
     },
     onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
@@ -173,14 +239,15 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
             <Label htmlFor="title">タイトル</Label>
             <Input id="title" required value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
-              <Label htmlFor="start_date">開始日</Label>
-              <Input id="start_date" type="date" required value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
+              <Label htmlFor="start_at">集合時間</Label>
+              <Input id="start_at" type="datetime-local" required value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="end_date">終了日</Label>
-              <Input id="end_date" type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+              <Label htmlFor="end_at">終了日時（任意）</Label>
+              <Input id="end_at" type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} />
+              <p className="text-xs text-muted-foreground">空欄の場合は終日予定になります</p>
             </div>
           </div>
           <div className="space-y-1.5">
@@ -201,10 +268,52 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                 ))}
               </SelectContent>
             </Select>
+            {form.category === 'other' && (
+              <Input
+                value={customCategory}
+                onChange={(e) => setCustomCategory(e.target.value)}
+                placeholder="カテゴリ名を入力"
+                className="mt-1.5"
+              />
+            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="description">詳細</Label>
             <Textarea id="description" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="link">リンク（任意）</Label>
+            <Input id="link" type="url" placeholder="https://" value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="attachment">添付ファイル（任意）</Label>
+            {mode === 'edit' && event.attachment_path && !removeAttachment && !file && (
+              <div className="flex items-center justify-between rounded-xl border border-input px-3 py-2">
+                <EventAttachmentLink path={event.attachment_path} />
+                <button type="button" onClick={() => setRemoveAttachment(true)} className="text-xs text-muted-foreground hover:text-destructive">
+                  削除
+                </button>
+              </div>
+            )}
+            {removeAttachment && !file && (
+              <p className="text-xs text-muted-foreground">保存すると添付ファイルが削除されます</p>
+            )}
+            <label
+              htmlFor="attachment"
+              className="flex h-20 cursor-pointer flex-col items-center justify-center gap-1 rounded-xl border border-dashed border-input text-xs text-muted-foreground hover:bg-muted/50"
+            >
+              <Paperclip className="h-4 w-4" />
+              {file ? file.name : 'タップしてファイルを選択'}
+            </label>
+            <input
+              id="attachment"
+              type="file"
+              className="hidden"
+              onChange={(e) => {
+                setFile(e.target.files?.[0] ?? null)
+                setRemoveAttachment(false)
+              }}
+            />
           </div>
           <div className="space-y-1.5">
             <Label>公開範囲</Label>
@@ -257,7 +366,7 @@ export default function Schedule() {
   const { data: events, isLoading } = useQuery({
     queryKey: ['club_events'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('club_events').select('*').order('start_date', { ascending: true })
+      const { data, error } = await supabase.from('club_events').select('*').order('start_at', { ascending: true })
       if (error) throw error
       return data
     },
@@ -300,11 +409,11 @@ export default function Schedule() {
     return registrations?.find((r) => r.event_id === eventId && r.profile_id === user?.id)?.status
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  const now = new Date()
   const filteredEvents = events
     ?.filter((e) => {
-      if (timeFilter === 'upcoming') return e.start_date >= today
-      if (timeFilter === 'past') return e.start_date < today
+      if (timeFilter === 'upcoming') return new Date(e.start_at) >= now
+      if (timeFilter === 'past') return new Date(e.start_at) < now
       return true
     })
     .filter((e) => {
@@ -367,7 +476,7 @@ export default function Schedule() {
       <div className="space-y-3">
         {filteredEvents?.map((e, i) => {
           const selected = myStatus(e.id)
-          const { month, day } = dateBoxParts(e.start_date)
+          const { month, day } = dateBoxParts(e.start_at)
           return (
             <motion.div key={e.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
               <Card className="p-5">
@@ -379,7 +488,13 @@ export default function Schedule() {
                   <div className="min-w-0 flex-1">
                     <div className="mb-1 flex items-start justify-between gap-2">
                       <h3 className="font-bold">{e.title}</h3>
-                      <div className="flex shrink-0 items-center gap-1.5">
+                      <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+                        {!e.end_at && (
+                          <Badge variant="outline" className="gap-1">
+                            <Clock className="h-3 w-3" />
+                            終日
+                          </Badge>
+                        )}
                         {e.visibility === 'invite_only' && (
                           <Badge variant="secondary" className="gap-1">
                             <UserRoundCheck className="h-3 w-3" />
@@ -417,14 +532,25 @@ export default function Schedule() {
                       )}
                       <span className="flex items-center gap-1">
                         <Calendar className="h-3.5 w-3.5" />
-                        {formatDate(e.start_date)}
-                        {e.end_date && e.end_date !== e.start_date ? ` 〜 ${formatDate(e.end_date)}` : ''}
+                        {formatDateTime(e.start_at)}
+                        {e.end_at ? ` 〜 ${formatEndTime(e.start_at, e.end_at)}` : ''}
                       </span>
                       <span className="flex items-center gap-1">
                         <Users className="h-3.5 w-3.5" />
                         参加 {attendingCount(e.id)}人
                       </span>
                     </div>
+                    {(e.link || e.attachment_path) && (
+                      <div className="mt-1.5 flex flex-wrap items-center gap-3">
+                        {e.link && (
+                          <a href={e.link} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                            <Link2 className="h-3.5 w-3.5" />
+                            リンクを開く
+                          </a>
+                        )}
+                        {e.attachment_path && <EventAttachmentLink path={e.attachment_path} />}
+                      </div>
+                    )}
                   </div>
                 </div>
               </Card>
