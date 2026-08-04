@@ -6,7 +6,7 @@ const LINE_REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
 // (single recipient per call, so the push — not multicast — endpoint).
 const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
-const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
+const ANTHROPIC_MODEL = 'claude-sonnet-5'
 const MAX_TOOL_ROUNDS = 8
 
 // Anthropic-hosted server tools — Claude decides when to call these, and the
