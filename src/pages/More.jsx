@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { Link, useOutletContext } from 'react-router-dom'
 import {
   ChevronRight,
@@ -10,7 +11,12 @@ import {
   Users,
   Wallet,
 } from 'lucide-react'
+import { useMutation } from '@tanstack/react-query'
+import { toast } from 'sonner'
+import { supabase } from '@/supabase'
 import { Card } from '@/components/ui/card'
+import { Button } from '@/components/ui/button'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog'
 
 const ITEMS = [
   { to: '/announcements', label: 'お知らせ', icon: Megaphone },
@@ -23,6 +29,68 @@ const ITEMS = [
 ]
 
 const OFFICER_ITEMS = [{ to: '/accounts', label: 'アカウント管理', icon: KeyRound }]
+
+// Self-service "退部する" -- deliberately quiet/de-emphasized per the club
+// owner's request (not a big card like the items above), but still a real
+// confirm dialog (not a native confirm()) so the consequences are spelled
+// out before the irreversible-feeling action. Calls the leave_club() RPC
+// (0050_member_leave_and_restore.sql), which clears this profile's roles
+// (blocked by the zero-executive lockout trigger if they're the sole
+// remaining executive -- surfaced below via the raised error message) and
+// sets profiles.left_at, hiding them from the roster. It's recoverable by
+// an executive via Members.jsx's "復元する" button, which is why the dialog
+// copy says "executive can undo" rather than "cannot be undone".
+function LeaveClubSection() {
+  const [open, setOpen] = useState(false)
+
+  const leave = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.rpc('leave_club')
+      if (error) throw error
+    },
+    onSuccess: async () => {
+      setOpen(false)
+      await supabase.auth.signOut()
+      // No manual redirect here -- the app's existing auth-state listener
+      // takes over and sends signed-out users to the login screen.
+    },
+    onError: (err) => toast.error(`退部処理に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="mt-8 block w-full text-center text-xs text-muted-foreground hover:text-destructive hover:underline"
+      >
+        退部する
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>退部しますか？</DialogTitle>
+            <DialogDescription>
+              退部すると、部員名簿など アプリ内のあらゆる場所から見えなくなり、保持している役職はすべて解除されます。
+              間違えて押してしまった場合も、アプリ管理者に連絡すれば復元してもらえます。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={leave.isPending}>
+                キャンセル
+              </Button>
+            </DialogClose>
+            <Button variant="destructive" onClick={() => leave.mutate()} disabled={leave.isPending}>
+              退部する
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
 
 export default function More() {
   const { profile, isOfficerPlus } = useOutletContext()
@@ -52,6 +120,8 @@ export default function More() {
       <Link to="/sitemap" className="mt-4 block text-center text-xs text-muted-foreground hover:text-primary hover:underline">
         サイトマップ
       </Link>
+
+      <LeaveClubSection />
     </div>
   )
 }

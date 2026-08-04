@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useOutletContext } from 'react-router-dom'
-import { AtSign, MapPin, Pencil, Phone, PhoneCall, Search, Tags, UserRound, Users } from 'lucide-react'
+import { AtSign, ChevronDown, MapPin, Pencil, Phone, PhoneCall, Search, Tags, UserRound, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -357,6 +357,71 @@ function PublicProfileSection({ member }) {
   )
 }
 
+// Executive-only, deliberately minimal list of members who left via the
+// self-service "退部する" button in More.jsx (leave_club() RPC, see
+// 0050_member_leave_and_restore.sql). Collapsed by default since this is a
+// rarely-needed recovery tool, not part of the normal roster flow -- a
+// simple name + timestamp + restore button is enough, it doesn't need to
+// match the full roster card design.
+function DepartedMembersSection() {
+  const [open, setOpen] = useState(false)
+  const queryClient = useQueryClient()
+
+  const { data: departed, isLoading } = useQuery({
+    queryKey: ['members', 'departed'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('profiles').select('id, full_name, left_at').not('left_at', 'is', null).order('left_at', { ascending: false })
+      if (error) throw error
+      return data
+    },
+    enabled: open,
+  })
+
+  const restore = useMutation({
+    mutationFn: async (targetProfileId) => {
+      const { error } = await supabase.rpc('restore_member', { target_profile_id: targetProfileId })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('復元しました')
+      queryClient.invalidateQueries({ queryKey: ['members', 'departed'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'full'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'directory'] })
+    },
+    onError: (err) => toast.error(`復元に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <div className="mt-8 border-t border-border/60 pt-4">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+      >
+        <ChevronDown className={`h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
+        退部したメンバー
+      </button>
+      {open && (
+        <div className="mt-3 space-y-2">
+          {isLoading && <p className="text-xs text-muted-foreground">読み込み中...</p>}
+          {!isLoading && (departed ?? []).length === 0 && <p className="text-xs text-muted-foreground">退部したメンバーはいません</p>}
+          {(departed ?? []).map((m) => (
+            <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm">
+              <div>
+                <p className="font-medium">{m.full_name}</p>
+                <p className="text-xs text-muted-foreground">{new Date(m.left_at).toLocaleString('ja-JP')} に退部</p>
+              </div>
+              <Button size="sm" variant="outline" onClick={() => restore.mutate(m.id)} disabled={restore.isPending}>
+                復元する
+              </Button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Members() {
   const { isExecutive, user } = useOutletContext()
   const [search, setSearch] = useState('')
@@ -440,6 +505,7 @@ export default function Members() {
         const { data, error } = await supabase
           .from('profiles')
           .select('id, full_name, email, phone, address, emergency_contact, avatar_url, bio, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
+          .is('left_at', null)
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))
       }
@@ -602,6 +668,8 @@ export default function Members() {
           )
         })}
       </div>
+
+      {isExecutive && <DepartedMembersSection />}
 
       <EditMemberDialog
         member={editing}
