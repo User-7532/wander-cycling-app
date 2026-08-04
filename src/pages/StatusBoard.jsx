@@ -43,6 +43,24 @@ export default function StatusBoard() {
   const [message, setMessage] = useState('')
   const [category, setCategory] = useState('status')
   const [customCategory, setCustomCategory] = useState('')
+  const [taskId, setTaskId] = useState('')
+
+  // Only fetched when needed, since picking "タスク完了" is what lets a post
+  // also mark the task itself as done (誰でも誰のタスクでも完了にできる — this
+  // board is where people report on each other's behalf too).
+  const { data: openTasks } = useQuery({
+    queryKey: ['tasks', 'open-for-status-board'],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('tasks')
+        .select('id, title, assignee:profiles!tasks_assigned_to_fkey(full_name)')
+        .neq('status', 'done')
+        .order('due_at', { ascending: true, nullsFirst: false })
+      if (error) throw error
+      return data
+    },
+    enabled: category === 'task_done',
+  })
 
   const { data: posts, isLoading } = useQuery({
     queryKey: ['status_posts'],
@@ -76,11 +94,18 @@ export default function StatusBoard() {
       const finalCategory = category === 'other' && customCategory.trim() ? customCategory.trim() : category
       const { error } = await supabase.from('status_posts').insert({ message, category: finalCategory, author_id: user.id })
       if (error) throw error
+
+      if (category === 'task_done' && taskId) {
+        const { error: taskError } = await supabase.rpc('complete_task_via_board', { target_task_id: taskId })
+        if (taskError) throw taskError
+      }
     },
     onSuccess: () => {
       setMessage('')
       setCustomCategory('')
+      setTaskId('')
       queryClient.invalidateQueries({ queryKey: ['status_posts'] })
+      queryClient.invalidateQueries({ queryKey: ['tasks'] })
     },
     onError: (err) => toast.error(`投稿に失敗しました: ${err.message}`),
   })
@@ -114,7 +139,13 @@ export default function StatusBoard() {
             className="w-full resize-none rounded-xl border border-input bg-white/70 px-4 py-2.5 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           />
           <div className="flex flex-wrap items-center gap-2">
-            <Select value={category} onValueChange={setCategory}>
+            <Select
+              value={category}
+              onValueChange={(v) => {
+                setCategory(v)
+                setTaskId('')
+              }}
+            >
               <SelectTrigger className="w-40">
                 <SelectValue />
               </SelectTrigger>
@@ -134,11 +165,37 @@ export default function StatusBoard() {
                 className="w-32"
               />
             )}
-            <Button type="submit" size="sm" className="ml-auto" disabled={post.isPending || !message.trim()}>
+            <Button
+              type="submit"
+              size="sm"
+              className="ml-auto"
+              disabled={post.isPending || !message.trim() || (category === 'task_done' && !taskId)}
+            >
               <Send className="h-3.5 w-3.5" />
               投稿
             </Button>
           </div>
+          {category === 'task_done' && (
+            <div className="space-y-1.5 rounded-xl border border-input p-2">
+              <Select value={taskId} onValueChange={setTaskId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="完了にするタスクを選択" />
+                </SelectTrigger>
+                <SelectContent>
+                  {openTasks?.map((t) => (
+                    <SelectItem key={t.id} value={t.id}>
+                      {t.title}
+                      {t.assignee?.full_name ? `(${t.assignee.full_name})` : ''}
+                    </SelectItem>
+                  ))}
+                  {openTasks?.length === 0 && (
+                    <div className="px-2 py-1.5 text-xs text-muted-foreground">未完了のタスクはありません</div>
+                  )}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">選択したタスクも、投稿と同時に「完了」になります(誰のタスクでも完了にできます)</p>
+            </div>
+          )}
         </form>
       </Card>
 
