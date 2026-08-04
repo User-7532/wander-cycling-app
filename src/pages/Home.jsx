@@ -127,7 +127,7 @@ export default function Home() {
         <h1 className="mt-1 text-3xl font-black tracking-tight">{displayName}さん</h1>
         <div className="mt-3 flex flex-wrap gap-2">
           {roleLabel && <Badge className="border-none bg-white/20 text-white hover:bg-white/20">{roleLabel}</Badge>}
-          {profile?.club_roles?.is_yakuin && <Badge className="border-none bg-white/20 text-white hover:bg-white/20">役員</Badge>}
+          {profile?.club_roles?.is_yakuin && <Badge className="border-none bg-white/20 text-white hover:bg-white/20">三役</Badge>}
           {isExecutive && <Badge className="border-none bg-white/20 text-white hover:bg-white/20">アプリ管理者</Badge>}
         </div>
       </motion.div>

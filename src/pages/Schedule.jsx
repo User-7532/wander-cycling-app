@@ -597,7 +597,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
               回答状況の閲覧を制限する
             </label>
             <p className="text-xs text-muted-foreground">
-              チェックしない場合、この予定を見られる人は誰でも回答状況（参加/不参加/未回答の内訳）を見られます。制限すると、選んだメンバー（と役員）だけが見られるようになります。
+              チェックしない場合、この予定を見られる人は誰でも回答状況（参加/不参加/未回答の内訳）を見られます。制限すると、選んだメンバー（とアプリ管理者）だけが見られるようになります。
             </p>
           </div>
           {form.rsvpRestricted && (
