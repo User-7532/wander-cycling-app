@@ -201,6 +201,30 @@ const EXECUTIVE_TOOLS = [
     },
   },
   {
+    name: 'update_event',
+    description:
+      '既存の予定の内容（タイトル・集合時間・終了日時・場所・カテゴリ・公開範囲）を編集する（アプリ管理者のみ実行可能）。変更したい項目だけをnew_で始まるフィールドに入れる。event_title_queryが複数の予定に一致した場合はambiguous:trueと候補一覧が返るので、実行せずにどの予定か本人に確認してから再度呼び出すこと。新しい集合時間にユーザーが時刻を言っていない場合、new_start_atを0:00などで勝手に補完せず、先に本人に確認すること。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        event_title_query: { type: 'string', description: '編集したい予定の現在のタイトル（部分一致で検索）' },
+        new_title: { type: 'string', description: '新しいタイトル。変更しない場合は省略。' },
+        new_start_at: {
+          type: 'string',
+          description: '新しい集合時間。"YYYY-MM-DD HH:mm"形式（例: "2026-08-10 08:00"）。変更しない場合は省略。',
+        },
+        new_end_at: {
+          type: 'string',
+          description: '新しい終了日時。"YYYY-MM-DD HH:mm"形式（例: "2026-08-11 15:00"）。変更しない場合は省略。',
+        },
+        new_location: { type: 'string', description: '変更しない場合は省略。' },
+        new_category: { type: 'string', enum: ['gasshuku', 'practice', 'event', 'meeting', 'competition', 'other'], description: '変更しない場合は省略。' },
+        new_visibility: { type: 'string', enum: ['all', 'invite_only'], description: '変更しない場合は省略。' },
+      },
+      required: ['event_title_query'],
+    },
+  },
+  {
     name: 'create_task',
     description:
       '部員にタスクを割り当てる（アプリ管理者のみ実行可能）。締め切りは任意項目だが、ユーザーが締め切りに言及したのに具体的な日時（時刻含む）を言っていない場合は、due_atを0:00などで勝手に補完せず、先に本人に確認すること。締め切りの話が一切ない場合はdue_atを省略してよい。',
@@ -217,6 +241,26 @@ const EXECUTIVE_TOOLS = [
         priority: { type: 'string', enum: ['low', 'medium', 'high'] },
       },
       required: ['title', 'assignee_name_query'],
+    },
+  },
+  {
+    name: 'update_task',
+    description:
+      '既存タスクの内容（タイトル・担当者・締め切り・優先度）を編集する（アプリ管理者のみ実行可能）。変更したい項目だけをnew_で始まるフィールドに入れる。task_title_queryが複数のタスクに一致した場合はambiguous:trueと候補一覧が返るので、実行せずにどのタスクか本人に確認し、assignee_name_queryなどで絞り込んでから再度呼び出すこと。新しい締め切りにユーザーが時刻を言っていない場合、new_due_atを0:00などで勝手に補完せず、先に本人に確認すること。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        task_title_query: { type: 'string', description: '編集したいタスクの現在のタイトル（部分一致で検索）' },
+        assignee_name_query: { type: 'string', description: '絞り込み用、現在の担当者名（部分一致）、任意' },
+        new_title: { type: 'string', description: '新しいタイトル。変更しない場合は省略。' },
+        new_assignee_name_query: { type: 'string', description: '新しい担当者の名前（部分一致）。担当者を変更しない場合は省略。' },
+        new_due_at: {
+          type: 'string',
+          description: '新しい締め切り日時。"YYYY-MM-DD HH:mm"形式（例: "2026-08-10 23:59"）。変更しない場合は省略。',
+        },
+        new_priority: { type: 'string', enum: ['low', 'medium', 'high'], description: '変更しない場合は省略。' },
+      },
+      required: ['task_title_query'],
     },
   },
   {
@@ -494,6 +538,47 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     return { ok: true, title: event.title, visibility }
   }
 
+  if (name === 'update_event') {
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+    const titleQuery = String(input.event_title_query ?? '').trim()
+    if (!titleQuery) return { error: 'event_title_queryが空です' }
+
+    const { data: matches, error: searchError } = await supabase
+      .from('club_events')
+      .select('id, title, start_at, location')
+      .ilike('title', `%${titleQuery}%`)
+      .order('start_at', { ascending: false })
+      .limit(8)
+    if (searchError) return { error: searchError.message }
+    if (!matches || matches.length === 0) return { error: '該当する予定が見つかりませんでした' }
+    if (matches.length > 1) {
+      return {
+        ambiguous: true,
+        candidates: matches.map((e) => ({ title: e.title, start_at: isoToJstDisplay(e.start_at), location: e.location })),
+        message: '複数の予定が該当しました。どの予定か本人に確認してから、絞り込んで再度実行してください。',
+      }
+    }
+
+    const event = matches[0]
+    const updates: Record<string, unknown> = {}
+    if (input.new_title) updates.title = input.new_title
+    if (input.new_start_at) {
+      const startAt = jstDateTimeToIso(input.new_start_at)
+      if (!startAt) return { error: 'new_start_atが正しい"YYYY-MM-DD HH:mm"形式ではありません。' }
+      updates.start_at = startAt
+    }
+    if (input.new_end_at) updates.end_at = jstDateTimeToIso(input.new_end_at)
+    if (input.new_location !== undefined) updates.location = input.new_location || null
+    if (input.new_category) updates.category = input.new_category
+    if (input.new_visibility) updates.visibility = input.new_visibility
+
+    if (Object.keys(updates).length === 0) return { error: '変更する項目がありません' }
+
+    const { error } = await supabase.from('club_events').update(updates).eq('id', event.id)
+    if (error) return { error: error.message }
+    return { ok: true, event_title: (updates.title as string) || event.title }
+  }
+
   if (name === 'create_task') {
     if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
     const assignee = await findMemberByName(input.assignee_name_query as string)
@@ -507,6 +592,53 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     })
     if (error) return { error: error.message }
     return { ok: true, assignee: assignee.full_name }
+  }
+
+  if (name === 'update_task') {
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+    const titleQuery = String(input.task_title_query ?? '').trim()
+    if (!titleQuery) return { error: 'task_title_queryが空です' }
+
+    let query = supabase
+      .from('tasks')
+      .select('id, title, due_at, assigned_to, assignee:profiles!tasks_assigned_to_fkey(full_name)')
+      .ilike('title', `%${titleQuery}%`)
+    if (input.assignee_name_query) {
+      const currentAssignee = await findMemberByName(String(input.assignee_name_query))
+      if (currentAssignee) query = query.eq('assigned_to', currentAssignee.id)
+    }
+
+    const { data: matches, error: searchError } = await query.limit(8)
+    if (searchError) return { error: searchError.message }
+    if (!matches || matches.length === 0) return { error: '該当するタスクが見つかりませんでした' }
+    if (matches.length > 1) {
+      return {
+        ambiguous: true,
+        candidates: matches.map((t) => ({ title: t.title, assignee: t.assignee?.full_name ?? '未割り当て', due_at: isoToJstDisplay(t.due_at) })),
+        message: '複数のタスクが該当しました。どのタスクか本人に確認してから、絞り込んで再度実行してください。',
+      }
+    }
+
+    const task = matches[0]
+    const updates: Record<string, unknown> = {}
+    if (input.new_title) updates.title = input.new_title
+    if (input.new_assignee_name_query) {
+      const newAssignee = await findMemberByName(String(input.new_assignee_name_query))
+      if (!newAssignee) return { error: '新しい担当者が見つかりませんでした' }
+      updates.assigned_to = newAssignee.id
+    }
+    if (input.new_due_at) {
+      const dueAt = jstDateTimeToIso(input.new_due_at)
+      if (!dueAt) return { error: 'new_due_atが正しい"YYYY-MM-DD HH:mm"形式ではありません。' }
+      updates.due_at = dueAt
+    }
+    if (input.new_priority) updates.priority = input.new_priority
+
+    if (Object.keys(updates).length === 0) return { error: '変更する項目がありません' }
+
+    const { error } = await supabase.from('tasks').update(updates).eq('id', task.id)
+    if (error) return { error: error.message }
+    return { ok: true, task_title: (updates.title as string) || task.title }
   }
 
   if (name === 'create_announcement') {
@@ -620,7 +752,7 @@ async function runAssistant(
     ? `\n\n[部内用語集 — これまでの会話で学んだ言葉]\n${ctx.glossary.map((g) => `・${g.term}: ${g.definition}`).join('\n')}`
     : ''
   const itineraryGuidance = `\n\n[旅程の相談を受けたときの考え方]\n合宿・遠征などの旅程相談では、「何時にどこへ移動する」だけでなく、現地で実際に起こりうる詰まりどころまで具体的に考えること。例えば「オシュからカシュガルへ国境を越える」なら、次のレベルの粒度で考える:\n・国境の営業時間や当日の状況はネットに出ていないことが多いので、前日に現地の人に聞く、朝一番で向かう、ダメだった場合の予備日を用意する、といった段取りを立てる\n・両替・支払いをどこで済ませるか（窓口の場所、現金の要否）を事前に把握しておく\n・現地で何も手に入らない前提で、水・食料を余分に持っておく\n・集合場所や検問で自分だけ置いていかれないように、誰がどう確認を取るかを決めておく\nこのように「情報が事前に取れない・不確実な場面でどう備えるか」を具体的に提案すること。抽象的な注意喚起（「気をつけましょう」など）で終わらせないこと。関連しそうな情報は、search_club_knowledgeや資料ページのlist_handover_resources（必要ならweb_fetchで中身を読む）で過去の知見を確認し、現地の営業時間・料金・最新情報などネットで調べられそうなことはweb_searchを使って調べること。旅程相談の中で今後も使えそうな知見を得たら、save_club_knowledgeで記録しておく。`
-  const disambiguationGuidance = `\n\n[曖昧な依頼への対応]\nタスクや予定の操作で、名前や件名だけでは対象が1件に絞れない場合（update_task_statusがambiguous:trueを返した場合など）、憶測でどれか1つを選んで実行してはいけない。候補（誰の・何という・いつまでのタスクか）を挙げて、本人にどれのことか確認してから、絞り込んで再度ツールを呼び出すこと。`
+  const disambiguationGuidance = `\n\n[曖昧な依頼への対応]\nタスクや予定の操作で、名前や件名だけでは対象が1件に絞れない場合（update_task_status/update_task/update_eventがambiguous:trueを返した場合など）、憶測でどれか1つを選んで実行してはいけない。候補（誰の・何という・いつの予定/タスクか）を挙げて、本人にどれのことか確認してから、絞り込んで再度ツールを呼び出すこと。`
   const shiritoriGuidance = `\n\n[しりとりをするときの注意]\n一度使った単語を再び使わないよう、会話履歴に出てきた単語は毎回すべて見返してから、まだ使われていない単語を出すこと。`
   const system = `${ctx.persona}\n\n[話しかけている部員の情報]\n名前: ${ctx.callerName}\n役職: ${ctx.callerRole}\n権限区分: ${ctx.tier}\n今日の日付: ${new Date().toISOString().slice(0, 10)}\nこの情報は事実として使ってよいが、部員本人に「あなたは○○さんですね」のように毎回確認する必要はない。${glossaryText}${itineraryGuidance}${disambiguationGuidance}${shiritoriGuidance}\n\n重要: ツール呼び出しが必要な用件だけでなく、雑談・しりとりなどの言葉遊び・ちょっとした相談にも普通に応じてよい。「秘書だからできない」のように用件外だからと安易に断らないこと。ただし、返信の中で事実として述べる内容（予定・タスク・部員情報など）は、ツールの実行結果に含まれるものだけにすること。実行していない操作をあたかも実行したかのように書いてはいけない。複数の依頼のうち一部しか実行できなかった場合は、実行できた分とできなかった分を正直に分けて伝えること。会話の中で部内だけで通じる言葉・ネタ・言い回しに気づいたら、save_glossary_termで記録しておくとよい。場所・旅程・ノウハウなど部として再利用できそうな知識に気づいたら、save_club_knowledgeで記録しておくとよい(特定個人の私的な情報は保存しないこと。承認や確認は不要)。`
   const messages = [...history, { role: 'user', content: userText }]
