@@ -668,11 +668,15 @@ serve(async (req) => {
         conversation = created
       }
 
+      // Ordered by seq (a monotonic sequence), not created_at -- the two
+      // messages of a turn are inserted in one statement below and so can
+      // share an identical created_at, which created_at-only ordering
+      // can't break ties on consistently.
       const { data: recentMessages } = await supabase
         .from('ai_secretary_messages')
         .select('role, content')
         .eq('conversation_id', conversation.id)
-        .order('created_at', { ascending: false })
+        .order('seq', { ascending: false })
         .limit(10)
 
       const history = (recentMessages ?? [])
