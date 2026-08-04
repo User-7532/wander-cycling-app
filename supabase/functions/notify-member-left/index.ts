@@ -24,7 +24,7 @@ serve(async (req) => {
   try {
     const { profile_id } = await req.json()
 
-    const { data: leaver, error: leaverErr } = await supabase.from('profiles').select('id, full_name').eq('id', profile_id).single()
+    const { data: leaver, error: leaverErr } = await supabase.from('profiles').select('id, full_name, left_at').eq('id', profile_id).single()
     if (leaverErr || !leaver) {
       return new Response(JSON.stringify({ error: leaverErr?.message ?? 'profile not found' }), { status: 404 })
     }
@@ -45,7 +45,18 @@ serve(async (req) => {
       return new Response(JSON.stringify({ notified: false, reason: '三役 have no linked LINE id' }))
     }
 
-    const text = [`📤 ${leaver.full_name}さんが退部しました`, '', '間違って退部した場合は、メンバー管理から復元できます。'].join('\n').slice(0, 4900)
+    const leftAt = leaver.left_at
+      ? new Date(leaver.left_at).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo', year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      : null
+    const text = [
+      `📤 ${leaver.full_name}さんが退部しました`,
+      leftAt ? `退部日時: ${leftAt}` : null,
+      '',
+      '間違って退部した場合は、メンバー管理から復元できます。',
+    ]
+      .filter((line) => line !== null)
+      .join('\n')
+      .slice(0, 4900)
 
     const accessToken = Deno.env.get('LINE_BOT_CHANNEL_ACCESS_TOKEN')!
     const res = await fetch(LINE_MULTICAST_URL, {
