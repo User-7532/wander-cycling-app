@@ -12,17 +12,85 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
-const YEAR_LABEL = { b1: '1年', b2: '2年', b3: '3年', b4: '4年', grad: '院生', ob: 'OB' }
-const STATUS_LABEL = { active: '在籍', leave: '休部', ob: 'OB' }
+// club_roles doesn't have a color column (unlike member_attributes), so
+// role badges are colored by tier using this fixed palette -- mirrors the
+// same TIER_COLOR mapping used in the role-management UI in Attributes.jsx.
+const TIER_COLOR = { executive: '#ef4444', officer: '#6366f1', general: '#64748b', alumni: '#a855f7' }
 
 function AttributeValueBadge({ value, color }) {
   return (
     <Badge variant="outline" className="border" style={{ backgroundColor: `${color}1a`, borderColor: `${color}55`, color }}>
       {value}
     </Badge>
+  )
+}
+
+// One badge per role a member holds (a profile can hold several
+// concurrently via profile_roles / 兼任), color-coded by club_roles.tier.
+function RoleBadge({ role }) {
+  const color = TIER_COLOR[role.tier] ?? TIER_COLOR.general
+  return (
+    <Badge variant="outline" className="border font-bold" style={{ backgroundColor: `${color}1a`, borderColor: `${color}55`, color }}>
+      {role.label_ja}
+    </Badge>
+  )
+}
+
+// Multi-select role picker (checkbox-style toggle chips), the same visual
+// pattern as AttributeToggleFields below, but backed by profile_roles
+// instead of profile_attribute_values so a profile can hold multiple
+// club_roles rows at once (兼任). Each toggle writes immediately (no
+// separate save step), matching how attribute toggles already behave.
+function RoleMultiSelectField({ memberId, allRoles, currentRoleIds }) {
+  const queryClient = useQueryClient()
+
+  const toggleRole = useMutation({
+    mutationFn: async ({ roleId, isAssigned }) => {
+      if (isAssigned) {
+        const { error } = await supabase.from('profile_roles').delete().eq('profile_id', memberId).eq('club_role_id', roleId)
+        if (error) throw error
+        return
+      }
+      const { error } = await supabase.from('profile_roles').insert({ profile_id: memberId, club_role_id: roleId })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['profile_roles_full'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'full'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'directory'] })
+    },
+    // A role removal that would leave the club with zero アプリ管理者 is
+    // rejected by the zero-executive-lockout trigger on profile_roles --
+    // surface that Japanese error via toast instead of swallowing it.
+    onError: (err) => toast.error(`更新に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <div className="space-y-1.5">
+      <Label>役職（複数選択可）</Label>
+      <div className="flex flex-wrap gap-1.5">
+        {(allRoles ?? []).length === 0 && <p className="text-xs text-muted-foreground">役職がまだありません</p>}
+        {(allRoles ?? []).map((r) => {
+          const isAssigned = currentRoleIds.has(r.id)
+          const color = TIER_COLOR[r.tier] ?? TIER_COLOR.general
+          return (
+            <button
+              key={r.id}
+              type="button"
+              onClick={() => toggleRole.mutate({ roleId: r.id, isAssigned })}
+              disabled={toggleRole.isPending}
+              className="rounded-full border px-2.5 py-1 text-xs font-bold transition-all disabled:opacity-50"
+              style={isAssigned ? { backgroundColor: color, borderColor: color, color: '#fff' } : { backgroundColor: `${color}0d`, borderColor: `${color}55`, color }}
+            >
+              {r.label_ja}
+            </button>
+          )
+        })}
+      </div>
+      <p className="text-[11px] text-muted-foreground">複数選べます（タップで選択・解除）</p>
+    </div>
   )
 }
 
@@ -120,18 +188,18 @@ function SelfAttributesDialog({ member, manualAttributes, assignedValueIds, curr
   )
 }
 
-function EditMemberDialog({ member, roles, manualAttributes, assignedValueIds, systemValues, currentUserId, open, onOpenChange }) {
-  const [clubRoleId, setClubRoleId] = useState(member?.club_role_id)
-  const [year, setYear] = useState(member?.year || '')
-  const [status, setStatus] = useState(member?.status || 'active')
+function EditMemberDialog({ member, roles, currentRoleIds, manualAttributes, assignedValueIds, systemValues, currentUserId, open, onOpenChange }) {
   const [cohortYear, setCohortYear] = useState(member?.cohort_year ?? '')
   const queryClient = useQueryClient()
+
+  const generationValue = systemValues.find((v) => v.attribute.key === 'generation')
+  const otherSystemValues = systemValues.filter((v) => v.attribute.key !== 'generation')
 
   const save = useMutation({
     mutationFn: async () => {
       const { error } = await supabase
         .from('profiles')
-        .update({ club_role_id: clubRoleId, year: year || null, status, cohort_year: cohortYear === '' ? null : Number(cohortYear) })
+        .update({ cohort_year: cohortYear === '' ? null : Number(cohortYear) })
         .eq('id', member.id)
       if (error) throw error
     },
@@ -152,60 +220,24 @@ function EditMemberDialog({ member, roles, manualAttributes, assignedValueIds, s
           <DialogTitle>{member.full_name} の設定を編集</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
-          <div className="space-y-1.5">
-            <Label>役職</Label>
-            <Select value={String(clubRoleId)} onValueChange={(v) => setClubRoleId(Number(v))}>
-              <SelectTrigger>
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {roles?.map((r) => (
-                  <SelectItem key={r.id} value={String(r.id)}>
-                    {r.label_ja}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="grid grid-cols-2 gap-3">
+          {/* Display/edit order: 代 (generation) -> 役職 (role) -> other attributes (学年/現役-OB, manual). */}
+          {generationValue && (
             <div className="space-y-1.5">
-              <Label>学年（旧項目、任意）</Label>
-              <Select value={year} onValueChange={setYear}>
-                <SelectTrigger>
-                  <SelectValue placeholder="未設定" />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(YEAR_LABEL).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>{generationValue.attribute.label}</Label>
+              <div>
+                <AttributeValueBadge value={generationValue.value} color={generationValue.attribute.color} />
+              </div>
             </div>
-            <div className="space-y-1.5">
-              <Label>在籍状況（旧項目）</Label>
-              <Select value={status} onValueChange={setStatus}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {Object.entries(STATUS_LABEL).map(([value, label]) => (
-                    <SelectItem key={value} value={value}>
-                      {label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
+          )}
+
+          <RoleMultiSelectField memberId={member.id} allRoles={roles} currentRoleIds={currentRoleIds} />
 
           <div className="space-y-1.5 border-t border-border/60 pt-3">
             <Label htmlFor="cohort-year">入部年度（学年・現役/OB は自動計算されます、任意）</Label>
             <Input id="cohort-year" type="number" placeholder="例: 2024" value={cohortYear} onChange={(e) => setCohortYear(e.target.value)} />
             <div className="flex flex-wrap gap-1.5 pt-1">
-              {systemValues.length === 0 && <p className="text-xs text-muted-foreground">現在の自動計算値はまだありません</p>}
-              {systemValues.map((v) => (
+              {otherSystemValues.length === 0 && <p className="text-xs text-muted-foreground">現在の自動計算値はまだありません</p>}
+              {otherSystemValues.map((v) => (
                 <AttributeValueBadge key={v.id} value={v.value} color={v.attribute.color} />
               ))}
             </div>
@@ -326,7 +358,7 @@ function PublicProfileSection({ member }) {
 }
 
 export default function Members() {
-  const { isOfficerPlus, isExecutive, user } = useOutletContext()
+  const { isExecutive, user } = useOutletContext()
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
   const [selfTagging, setSelfTagging] = useState(false)
@@ -335,6 +367,19 @@ export default function Members() {
     queryKey: ['club_roles'],
     queryFn: async () => {
       const { data, error } = await supabase.from('club_roles').select('*').order('sort_order')
+      if (error) throw error
+      return data
+    },
+  })
+
+  // The full set of roles each profile currently holds (兼任-aware), for
+  // rendering role badges on every card and driving the multi-select in the
+  // executive edit dialog. Readable by any signed-in member (see RLS on
+  // profile_roles in 0045), independent of officer/yakuin status.
+  const { data: profileRoles } = useQuery({
+    queryKey: ['profile_roles_full'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('profile_roles').select('profile_id, club_role_id, club_roles(label_ja, tier, is_yakuin, sort_order)')
       if (error) throw error
       return data
     },
@@ -362,13 +407,39 @@ export default function Members() {
     },
   })
 
+  const profileRolesByProfile = useMemo(() => {
+    const m = {}
+    ;(profileRoles ?? []).forEach((row) => {
+      const roleInfo = {
+        club_role_id: row.club_role_id,
+        label_ja: row.club_roles?.label_ja,
+        tier: row.club_roles?.tier,
+        is_yakuin: row.club_roles?.is_yakuin,
+        sort_order: row.club_roles?.sort_order,
+      }
+      ;(m[row.profile_id] ??= []).push(roleInfo)
+    })
+    Object.values(m).forEach((arr) => arr.sort((a, b) => (a.sort_order ?? 99) - (b.sort_order ?? 99)))
+    return m
+  }, [profileRoles])
+
+  // 三役 = holds ANY role with is_yakuin=true, not just the "primary"
+  // (highest-tier) role synced onto profiles.club_role_id -- with 兼任 a
+  // yakuin role can be held alongside a non-yakuin one.
+  const isYakuin = (profileRolesByProfile[user?.id] ?? []).some((r) => r.is_yakuin)
+  // Executives always need cohort_year/club_role_id/etc. to edit members;
+  // 三役 additionally need contact fields. Plain officers (tier='officer',
+  // not yakuin) no longer get the full profile fetch -- narrower than the
+  // old isOfficerPlus gate.
+  const canManageMembers = isExecutive || isYakuin
+
   const { data: members, isLoading } = useQuery({
-    queryKey: isOfficerPlus ? ['members', 'full'] : ['members', 'directory'],
+    queryKey: canManageMembers ? ['members', 'full'] : ['members', 'directory'],
     queryFn: async () => {
-      if (isOfficerPlus) {
+      if (canManageMembers) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, bio, year, status, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
+          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, bio, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))
       }
@@ -419,13 +490,14 @@ export default function Members() {
   const editingSystemValues = (assignmentsByProfile[editing?.id] ?? [])
     .map((vid) => valuesById[vid])
     .filter((v) => v && v.attribute.managed_by === 'system')
+  const editingCurrentRoleIds = new Set((profileRolesByProfile[editing?.id] ?? []).map((r) => r.club_role_id))
 
   return (
     <div className="mx-auto max-w-6xl px-5 py-6 md:px-8 md:py-8">
       <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h1 className="mb-1 text-2xl font-black tracking-tight">{isOfficerPlus ? 'メンバー管理' : '部員名簿'}</h1>
-          <p className="text-sm text-muted-foreground">{isOfficerPlus ? 'クラブメンバーの名簿・連絡先を管理します（担当者以上限定）' : '部員一覧'}</p>
+          <h1 className="mb-1 text-2xl font-black tracking-tight">{canManageMembers ? 'メンバー管理' : '部員名簿'}</h1>
+          <p className="text-sm text-muted-foreground">{canManageMembers ? 'メンバーの名簿・連絡先を管理します（三役限定）' : '部員一覧'}</p>
         </div>
         <Link to="/attributes" className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline">
           <Tags className="h-4 w-4" />
@@ -456,7 +528,12 @@ export default function Members() {
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {filtered.map((m, i) => {
           const isSelf = m.id === user?.id
-          const memberValues = (assignmentsByProfile[m.id] ?? []).map((vid) => valuesById[vid]).filter(Boolean)
+          const memberRoles = profileRolesByProfile[m.id] ?? []
+          const allMemberValues = (assignmentsByProfile[m.id] ?? []).map((vid) => valuesById[vid]).filter(Boolean)
+          const generationValue = allMemberValues.find((v) => v.attribute.key === 'generation')
+          const otherMemberValues = allMemberValues.filter((v) => v.attribute.key !== 'generation')
+          const memberIsYakuin = memberRoles.some((r) => r.is_yakuin)
+          const memberIsExecutive = memberRoles.some((r) => r.tier === 'executive')
           return (
             <motion.div key={m.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: Math.min(i, 8) * 0.02 }}>
               <Card className="p-5">
@@ -468,7 +545,7 @@ export default function Members() {
                     </Avatar>
                     <div>
                       <p className="font-bold">{m.full_name}</p>
-                      {isOfficerPlus && m.email && <p className="truncate text-xs text-muted-foreground">{m.email}</p>}
+                      {isYakuin && m.email && <p className="truncate text-xs text-muted-foreground">{m.email}</p>}
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -485,18 +562,20 @@ export default function Members() {
                   </div>
                 </div>
                 <div className="mb-3 flex flex-wrap gap-1.5">
-                  {m.club_roles?.label_ja && <Badge variant="secondary">{m.club_roles.label_ja}</Badge>}
-                  {m.club_roles?.is_yakuin && <Badge variant="outline">役員</Badge>}
-                  {m.club_roles?.tier === 'executive' && <Badge variant="outline">アプリ管理者</Badge>}
-                  {m.year && YEAR_LABEL[m.year] && <Badge variant="outline">{YEAR_LABEL[m.year]}</Badge>}
-                  {m.status && m.status !== 'active' && <Badge variant="outline">{STATUS_LABEL[m.status]}</Badge>}
-                  {memberValues.map((v) => (
+                  {/* Badge order: 代 (generation) -> 役職 (role, possibly plural) -> other attributes. */}
+                  {generationValue && <AttributeValueBadge value={generationValue.value} color={generationValue.attribute.color} />}
+                  {memberRoles.map((r) => (
+                    <RoleBadge key={r.club_role_id} role={r} />
+                  ))}
+                  {memberIsYakuin && <Badge variant="outline">三役</Badge>}
+                  {memberIsExecutive && <Badge variant="outline">アプリ管理者</Badge>}
+                  {otherMemberValues.map((v) => (
                     <AttributeValueBadge key={v.id} value={v.value} color={v.attribute.color} />
                   ))}
                 </div>
-                {isOfficerPlus && (m.phone || m.address || m.emergency_contact) && (
+                {isYakuin && (m.phone || m.address || m.emergency_contact) && (
                   <div className="space-y-1 border-t border-border/60 pt-3 text-xs text-muted-foreground">
-                    <p className="font-bold">連絡先（担当者以上限定・非公開）</p>
+                    <p className="font-bold">連絡先（三役限定・非公開）</p>
                     {m.phone && (
                       <p className="flex items-center gap-1.5">
                         <Phone className="h-3 w-3" />
@@ -527,6 +606,7 @@ export default function Members() {
       <EditMemberDialog
         member={editing}
         roles={roles}
+        currentRoleIds={editingCurrentRoleIds}
         manualAttributes={manualAttributes}
         assignedValueIds={editingAssignedValueIds}
         systemValues={editingSystemValues}
