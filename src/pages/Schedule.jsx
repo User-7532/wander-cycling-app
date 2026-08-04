@@ -143,8 +143,10 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
   )
   const [filterAttrId, setFilterAttrId] = useState('')
   const [filterValueId, setFilterValueId] = useState('')
+  const [filterRoleId, setFilterRoleId] = useState('')
   const [rsvpFilterAttrId, setRsvpFilterAttrId] = useState('')
   const [rsvpFilterValueId, setRsvpFilterValueId] = useState('')
+  const [rsvpFilterRoleId, setRsvpFilterRoleId] = useState('')
   const [customCategory, setCustomCategory] = useState(
     mode === 'edit' && event.category && !CATEGORY_LABEL[event.category] ? event.category : ''
   )
@@ -234,12 +236,50 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     enabled: !!rsvpFilterAttrId,
   })
 
+  // Role-based bulk selection (same XOR-toggle pattern as the attribute
+  // filters above, but resolved via profile_roles instead of
+  // profile_attribute_values). Shared between the invitee and
+  // RSVP-viewer pickers, same as `attributes` above.
+  const { data: clubRoles } = useQuery({
+    queryKey: ['club_roles', 'for-invite-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('club_roles').select('id, label_ja').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: open && (form.visibility === 'invite_only' || form.rsvpRestricted),
+  })
+
   async function applyAttributeFilter() {
     if (!filterValueId) return
     const { data, error } = await supabase
       .from('profile_attribute_values')
       .select('profile_id')
       .eq('attribute_value_id', filterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    const next = new Set(form.inviteeIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setForm((f) => ({ ...f, inviteeIds: Array.from(next) }))
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  async function applyRoleFilter() {
+    if (!filterRoleId) return
+    const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', filterRoleId)
     if (error) {
       toast.error('メンバーの取得に失敗しました')
       return
@@ -284,6 +324,30 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       .from('profile_attribute_values')
       .select('profile_id')
       .eq('attribute_value_id', rsvpFilterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    const next = new Set(form.rsvpViewerIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setForm((f) => ({ ...f, rsvpViewerIds: Array.from(next) }))
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  async function applyRsvpRoleFilter() {
+    if (!rsvpFilterRoleId) return
+    const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', rsvpFilterRoleId)
     if (error) {
       toast.error('メンバーの取得に失敗しました')
       return
@@ -387,8 +451,10 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         setRemoveAttachment(false)
         setFilterAttrId('')
         setFilterValueId('')
+        setFilterRoleId('')
         setRsvpFilterAttrId('')
         setRsvpFilterValueId('')
+        setRsvpFilterRoleId('')
       }
       onOpenChange(false)
     },
@@ -563,6 +629,29 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
               </div>
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select value={filterRoleId} onValueChange={setFilterRoleId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="役職を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clubRoles?.map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.label_ja}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!filterRoleId} onClick={applyRoleFilter}>
+                    選択を切替
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+              </div>
               <div className="flex gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={selectAllInvitees}>
                   全員選択
@@ -637,6 +726,29 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                     </SelectContent>
                   </Select>
                   <Button type="button" size="sm" variant="secondary" disabled={!rsvpFilterValueId} onClick={applyRsvpAttributeFilter}>
+                    選択を切替
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+              </div>
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select value={rsvpFilterRoleId} onValueChange={setRsvpFilterRoleId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="役職を選択" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clubRoles?.map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.label_ja}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!rsvpFilterRoleId} onClick={applyRsvpRoleFilter}>
                     選択を切替
                   </Button>
                 </div>

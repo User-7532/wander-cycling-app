@@ -56,6 +56,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   )
   const [bulkMode, setBulkMode] = useState(false)
   const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
+  const [filterRoleId, setFilterRoleId] = useState('')
   // selectedIds is the actual bulk-create target group. It is NOT derived
   // live from the filter condition below -- the filter condition is a
   // preview of who an "適用" click would affect. Clicking apply flips
@@ -102,6 +103,19 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     queryKey: ['member_attribute_values'],
     queryFn: async () => {
       const { data, error } = await supabase.from('member_attribute_values').select('id, attribute_id, value').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: mode === 'create' && bulkMode,
+  })
+
+  // Role-based bulk selection (separate from the AND-chained attribute
+  // filters above, per profile_roles instead of profile_attribute_values):
+  // pick a club role, then XOR-toggle its members into selectedIds.
+  const { data: clubRoles } = useQuery({
+    queryKey: ['club_roles', 'for-task-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('club_roles').select('id, label_ja').order('sort_order')
       if (error) throw error
       return data
     },
@@ -177,6 +191,30 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     setSelectedIds(next)
     toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
+  async function applyRoleFilter() {
+    if (!filterRoleId) return
+    const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', filterRoleId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    if (ids.length === 0) return
+    const next = new Set(selectedIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setSelectedIds(next)
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
   function selectAllProfiles() {
     setSelectedIds(new Set((members ?? []).map((m) => m.id)))
   }
@@ -203,6 +241,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setForm(EMPTY_FORM)
       setBulkMode(false)
       setFilters([{ ...EMPTY_FILTER }])
+      setFilterRoleId('')
       setSelectedIds(new Set())
       onOpenChange(false)
     },
@@ -314,6 +353,27 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
                 <p className="text-xs text-muted-foreground">該当する部員がいません</p>
               )}
+
+              <div className="space-y-2 border-t pt-3">
+                <Label>役職で絞り込む</Label>
+                <div className="flex items-center gap-2">
+                  <Select value={filterRoleId} onValueChange={setFilterRoleId}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="役職" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clubRoles?.map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.label_ja}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!filterRoleId} onClick={applyRoleFilter}>
+                    この条件で選択を切替
+                  </Button>
+                </div>
+              </div>
 
               <div className="space-y-1.5 pt-2">
                 <div className="flex items-center justify-between">
