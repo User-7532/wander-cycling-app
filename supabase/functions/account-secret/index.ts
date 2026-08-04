@@ -27,7 +27,7 @@ serve(async (req) => {
 
     const admin = createClient(supabaseUrl, serviceRoleKey)
 
-    const { data: profile } = await admin.from('profiles').select('id, club_roles(tier)').eq('id', user.id).single()
+    const { data: profile } = await admin.from('profiles').select('id, club_roles!profiles_club_role_id_fkey(tier)').eq('id', user.id).single()
     const tier = profile?.club_roles?.tier ?? 'general'
     const isOfficerPlus = tier === 'executive' || tier === 'officer'
     const isExecutive = tier === 'executive'

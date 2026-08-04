@@ -504,7 +504,9 @@ export default function Members() {
       if (canManageMembers) {
         const { data, error } = await supabase
           .from('profiles')
-          .select('id, full_name, email, phone, address, emergency_contact, avatar_url, bio, cohort_year, club_role_id, club_roles(label_ja, tier, sort_order, is_yakuin)')
+          .select(
+            'id, full_name, email, phone, address, emergency_contact, avatar_url, bio, cohort_year, club_role_id, club_roles!profiles_club_role_id_fkey(label_ja, tier, sort_order, is_yakuin)'
+          )
           .is('left_at', null)
         if (error) throw error
         return data.sort((a, b) => (a.club_roles?.sort_order ?? 99) - (b.club_roles?.sort_order ?? 99))

@@ -546,7 +546,7 @@ serve(async (req) => {
 
       const { data: profile } = await supabase
         .from('profiles')
-        .select('id, full_name, club_roles(label_ja, tier)')
+        .select('id, full_name, club_roles!profiles_club_role_id_fkey(label_ja, tier)')
         .eq('id', identity.profile_id)
         .single()
 
