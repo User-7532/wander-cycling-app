@@ -1,24 +1,38 @@
 import { serve } from 'https://deno.land/std@0.168.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 
-// Runs daily (via pg_cron, see migration 0035) and keeps the two
-// system-managed member attributes -- grade_year (学年) and active_status
-// (現役/OB) -- in sync with each profile's cohort_year (入部年度), purely as
-// a function of cohort_year + today's date (JST). Existing
-// profile_attribute_values rows are never read as an input to the
-// computation -- both values are recomputed fresh every run from
-// cohort_year alone, then written only if they differ from what's
-// currently assigned, so re-running this on the same day is a no-op.
+// Runs daily (via pg_cron, see migration 0035) and keeps three
+// system-managed member attributes -- grade_year (学年), active_status
+// (現役/OB), and generation (代) -- in sync with each profile's cohort_year
+// (入部年度), purely as a function of cohort_year (+ today's date (JST) for
+// the first two). Existing profile_attribute_values rows are never read as
+// an input to the computation -- all three values are recomputed fresh
+// every run from cohort_year alone, then written only if they differ from
+// what's currently assigned, so re-running this on the same day is a
+// no-op.
 //
 // Japan's academic year runs April(4)-March(3). For a person who joined as
 // 1年 in cohort_year Y:
 //   - grade advances every April 1st: grade = academicYear(today) - Y + 1.
 //     1<=grade<=4 -> `${grade}年`, grade>=5 -> '卒業', grade<1 -> skip this
-//     profile entirely (a future/invalid cohort_year is a data-entry
-//     problem for a human to fix, not something to guess about).
+//     profile entirely for grade_year/active_status (a future/invalid
+//     cohort_year is a data-entry problem for a human to fix, not
+//     something to guess about).
 //   - active_status flips to OB from September 1st of their 3rd academic
 //     year onward (Sept 1 of Y+2), independent of the grade label -- not
 //     derived from it.
+//   - generation = cohort_year + 2 - 1966 (the club was founded in 1966),
+//     formatted as `${generation}代` (e.g. cohort_year 2024 -> "60代").
+//     Unlike grade_year/active_status this is never time-varying for a
+//     given cohort_year and is always well-defined, so it's computed for
+//     every profile with a cohort_year regardless of the grade<1 skip
+//     above. member_attribute_values rows for generation aren't
+//     pre-seeded (unlike the fixed grade/active label sets) since the
+//     generation number grows every year -- this function find-or-creates
+//     the value row for each generation label it encounters, guarded by
+//     member_attribute_values' existing unique(attribute_id, value)
+//     constraint so a concurrent/duplicate run can't create two rows for
+//     the same generation.
 //
 // Separately: whenever this run flips a profile's active_status from
 // not-OB to OB for someone who currently holds executive tier (アプリ管理者
@@ -31,17 +45,28 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 // changes to OB, so re-running the same day is a no-op here too.
 //
 // Also separately: for *every* profile whose active_status newly becomes OB
-// this run (not just executives), we reassign profiles.club_role_id to the
-// seeded OB/alumni-tier role (club_roles id=14), which naturally clears
-// whatever specific position (幹事長, 広報, ...) they held. This is a normal
-// `profiles` UPDATE, so the zero-executive-lockout trigger
-// (prevent_zero_executive_lockout) fires as usual -- if this profile is
-// currently the sole remaining executive, the trigger raises and blocks
-// just that one update; we catch it per-profile (one UPDATE statement per
-// profile, so one block never rolls back anyone else's role-clear) and
-// report it back as `roleClearBlocked`, leaving that person's role
-// untouched until a successor is promoted -- exactly what the succession
-// nudge above exists to prompt.
+// this run (not just executives), we clear every position (幹事長, 広報,
+// ...) they currently hold and replace it with just the seeded OB/alumni
+// role (club_roles id=14). Positions are tracked in `profile_roles` (see
+// 0045_profile_roles_multi_position.sql), the source of truth for which
+// roles a profile holds; profiles.club_role_id is only a derived "primary
+// role" mirror kept in sync by a trigger on profile_roles. So this is done
+// as a `profile_roles` delete-then-insert (all of the retiree's current
+// rows removed, replaced by a single row for id 14) rather than a direct
+// `profiles` UPDATE -- writing profiles.club_role_id directly here would
+// leave their old profile_roles rows in place, which would make
+// is_executive()/current_tier() (which read profile_roles, not
+// club_role_id) keep treating them as still holding their old role. The
+// delete re-fires prevent_zero_executive_lockout_profile_roles for each
+// row it removes, same semantics as the old profiles-level trigger: if
+// this profile is currently the sole remaining executive-tier role holder
+// app-wide, the whole delete is blocked and none of their roles are
+// cleared; we catch it per-profile (one delete/insert pair per profile, so
+// one block never rolls back anyone else's role-clear) and report it back
+// as `roleClearBlocked`, leaving that person's roles untouched until a
+// successor is promoted -- exactly what the succession nudge above exists
+// to prompt. profiles.club_role_id itself is never written directly here;
+// it's recomputed automatically by the profile_roles sync trigger.
 
 const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 
@@ -80,27 +105,34 @@ serve(async (req) => {
     const academicYear = month >= 4 ? year : year - 1
     const todayNum = dateNum(year, month, day)
 
-    // Look up the two system attributes and their fixed value ids by label.
+    // Look up the three system attributes. grade_year/active_status have a
+    // fixed, pre-seeded value set (checked below); generation's value set
+    // grows over time and is find-or-created per profile in the loop.
     const { data: attrs, error: attrsErr } = await supabase
       .from('member_attributes')
       .select('id, key')
-      .in('key', ['grade_year', 'active_status'])
+      .in('key', ['grade_year', 'active_status', 'generation'])
     if (attrsErr) throw attrsErr
     const gradeAttr = attrs?.find((a) => a.key === 'grade_year')
     const activeAttr = attrs?.find((a) => a.key === 'active_status')
-    if (!gradeAttr || !activeAttr) throw new Error('grade_year / active_status attribute row not found')
+    const generationAttr = attrs?.find((a) => a.key === 'generation')
+    if (!gradeAttr || !activeAttr || !generationAttr) {
+      throw new Error('grade_year / active_status / generation attribute row not found')
+    }
 
     const { data: values, error: valuesErr } = await supabase
       .from('member_attribute_values')
       .select('id, value, attribute_id')
-      .in('attribute_id', [gradeAttr.id, activeAttr.id])
+      .in('attribute_id', [gradeAttr.id, activeAttr.id, generationAttr.id])
     if (valuesErr) throw valuesErr
 
     const gradeValueIdByLabel = new Map<string, string>()
     const activeValueIdByLabel = new Map<string, string>()
+    const generationValueIdByLabel = new Map<string, string>()
     for (const v of values ?? []) {
       if (v.attribute_id === gradeAttr.id) gradeValueIdByLabel.set(v.value, v.id)
       if (v.attribute_id === activeAttr.id) activeValueIdByLabel.set(v.value, v.id)
+      if (v.attribute_id === generationAttr.id) generationValueIdByLabel.set(v.value, v.id)
     }
     for (const label of GRADE_LABELS) {
       if (!gradeValueIdByLabel.has(label)) throw new Error(`missing grade_year value: ${label}`)
@@ -137,29 +169,38 @@ serve(async (req) => {
       .in('club_role_id', [...executiveRoleIds])
     if (executiveProfilesErr) throw executiveProfilesErr
 
-    // Current assignments under either system attribute, for every profile
-    // with a cohort_year, in one query -- diffed against the freshly
-    // computed values below so we only write what actually changed.
+    // Current assignments under any of the three system attributes, for
+    // every profile with a cohort_year, in one query -- diffed against the
+    // freshly computed values below so we only write what actually
+    // changed. Generation values created *during* this run (for a
+    // generation label nobody has been assigned before) obviously can't
+    // already show up here -- that's fine, they can't already be assigned
+    // to anyone either.
     const profileIds = (profiles ?? []).map((p) => p.id)
     const currentGradeByProfile = new Map<string, string>()
     const currentActiveByProfile = new Map<string, string>()
+    const currentGenerationByProfile = new Map<string, string>()
     if (profileIds.length > 0) {
       const { data: current, error: currentErr } = await supabase
         .from('profile_attribute_values')
         .select('profile_id, attribute_value_id')
         .in('profile_id', profileIds)
-        .in('attribute_value_id', [...gradeValueIds, ...activeValueIds])
+        .in('attribute_value_id', [...gradeValueIds, ...activeValueIds, ...generationValueIdByLabel.values()])
       if (currentErr) throw currentErr
       const gradeValueIdSet = new Set(gradeValueIds)
       const activeValueIdSet = new Set(activeValueIds)
+      const generationValueIdSet = new Set(generationValueIdByLabel.values())
       for (const row of current ?? []) {
         if (gradeValueIdSet.has(row.attribute_value_id)) currentGradeByProfile.set(row.profile_id, row.attribute_value_id)
         if (activeValueIdSet.has(row.attribute_value_id)) currentActiveByProfile.set(row.profile_id, row.attribute_value_id)
+        if (generationValueIdSet.has(row.attribute_value_id)) currentGenerationByProfile.set(row.profile_id, row.attribute_value_id)
       }
     }
 
     let gradeUpdates = 0
     let activeUpdates = 0
+    let generationUpdates = 0
+    let generationValuesCreated = 0
     let skipped = 0
 
     // Profiles whose active_status is newly flipping to OB *this run* (was
@@ -174,6 +215,52 @@ serve(async (req) => {
 
     for (const p of profiles ?? []) {
       const cohortYear = p.cohort_year as number
+
+      // 代 (generation): a pure function of cohort_year alone, so unlike
+      // grade_year/active_status below it's computed and assigned even for
+      // a profile whose cohort_year would otherwise be skipped (grade<1).
+      const generation = cohortYear + 2 - 1966
+      const generationLabel = `${generation}代`
+      let desiredGenerationValueId = generationValueIdByLabel.get(generationLabel)
+      if (!desiredGenerationValueId) {
+        const { data: newVal, error: newValErr } = await supabase
+          .from('member_attribute_values')
+          .insert({ attribute_id: generationAttr.id, value: generationLabel })
+          .select('id')
+          .single()
+        if (newValErr) {
+          // Most likely a unique(attribute_id, value) conflict from a
+          // concurrent/earlier run already having created this generation's
+          // value row -- re-fetch it instead of failing outright.
+          const { data: existingVal, error: existingValErr } = await supabase
+            .from('member_attribute_values')
+            .select('id')
+            .eq('attribute_id', generationAttr.id)
+            .eq('value', generationLabel)
+            .single()
+          if (existingValErr || !existingVal) throw newValErr
+          desiredGenerationValueId = existingVal.id
+        } else {
+          desiredGenerationValueId = newVal.id
+          generationValuesCreated++
+        }
+        generationValueIdByLabel.set(generationLabel, desiredGenerationValueId)
+      }
+
+      if (currentGenerationByProfile.get(p.id) !== desiredGenerationValueId) {
+        const { error: delErr } = await supabase
+          .from('profile_attribute_values')
+          .delete()
+          .eq('profile_id', p.id)
+          .in('attribute_value_id', [...generationValueIdByLabel.values()])
+        if (delErr) throw delErr
+        const { error: insErr } = await supabase
+          .from('profile_attribute_values')
+          .insert({ profile_id: p.id, attribute_value_id: desiredGenerationValueId })
+        if (insErr) throw insErr
+        generationUpdates++
+      }
+
       const grade = academicYear - cohortYear + 1
 
       if (grade < 1) {
@@ -226,21 +313,31 @@ serve(async (req) => {
       }
     }
 
-    // Role-clear: for every profile that just newly became OB, reassign
-    // club_role_id to the seeded OB/alumni-tier role (id 14), which
-    // naturally clears whatever specific position they held. This is a
-    // normal `profiles` UPDATE (not a bypass), so
-    // prevent_zero_executive_lockout fires as usual -- one UPDATE per
-    // profile, so a block on one person's update can never roll back
-    // another person's role-clear in the same run.
+    // Role-clear: for every profile that just newly became OB, clear every
+    // position they currently hold in `profile_roles` and replace it with
+    // just the seeded OB/alumni-tier role (id 14). profiles.club_role_id is
+    // never written directly -- the AFTER trigger on profile_roles
+    // (sync_primary_club_role, see 0045_profile_roles_multi_position.sql)
+    // recomputes it automatically from the new profile_roles set. The
+    // delete re-fires prevent_zero_executive_lockout_profile_roles per row
+    // -- one delete/insert pair per profile, so a block on one person's
+    // role-clear can never roll back another person's in the same run.
     const OB_ROLE_ID = 14
     let roleClears = 0
     const roleClearBlocked: { id: string; full_name: string; reason: string }[] = []
     for (const retiree of newlyOB) {
-      const { error: roleErr } = await supabase.from('profiles').update({ club_role_id: OB_ROLE_ID }).eq('id', retiree.id)
-      if (roleErr) {
-        console.log(`role-clear blocked for ${retiree.full_name} (${retiree.id}): ${roleErr.message}`)
-        roleClearBlocked.push({ id: retiree.id, full_name: retiree.full_name, reason: roleErr.message })
+      const { error: deleteRolesErr } = await supabase.from('profile_roles').delete().eq('profile_id', retiree.id)
+      if (deleteRolesErr) {
+        console.log(`role-clear blocked for ${retiree.full_name} (${retiree.id}): ${deleteRolesErr.message}`)
+        roleClearBlocked.push({ id: retiree.id, full_name: retiree.full_name, reason: deleteRolesErr.message })
+        continue
+      }
+      const { error: obRoleErr } = await supabase
+        .from('profile_roles')
+        .insert({ profile_id: retiree.id, club_role_id: OB_ROLE_ID })
+      if (obRoleErr) {
+        console.error(`role-clear: failed to assign OB role to ${retiree.full_name} (${retiree.id}) after clearing roles:`, obRoleErr.message)
+        roleClearBlocked.push({ id: retiree.id, full_name: retiree.full_name, reason: obRoleErr.message })
         continue
       }
       roleClears++
@@ -312,6 +409,8 @@ serve(async (req) => {
         profilesConsidered: profiles?.length ?? 0,
         gradeUpdates,
         activeUpdates,
+        generationUpdates,
+        generationValuesCreated,
         skipped,
         roleClears,
         roleClearBlocked,
