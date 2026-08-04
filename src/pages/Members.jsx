@@ -544,12 +544,32 @@ export default function Members() {
     return m
   }, [assignments])
 
+  // Default roster order: 現役 members first (grade_year ascending, 1年 ->
+  // 卒業), then OB, then anyone with no computed status yet (e.g. cohort_year
+  // not set) grouped with 現役 since they're presumably still active; within
+  // each group, あいうえお (Japanese) name order.
+  const GRADE_RANK = { '1年': 1, '2年': 2, '3年': 3, '4年': 4, '卒業': 5 }
+  const STATUS_RANK = { '現役': 0, undefined: 1, 'OB': 2 }
+
+  const memberSortKey = (profileId) => {
+    const values = (assignmentsByProfile[profileId] ?? []).map((vid) => valuesById[vid]).filter(Boolean)
+    const grade = values.find((v) => v.attribute.key === 'grade_year')?.value
+    const status = values.find((v) => v.attribute.key === 'active_status')?.value
+    return [STATUS_RANK[status] ?? 1, GRADE_RANK[grade] ?? 6]
+  }
+
   const filtered = useMemo(() => {
     if (!members) return []
     const q = search.trim().toLowerCase()
-    if (!q) return members
-    return members.filter((m) => m.full_name?.toLowerCase().includes(q) || m.email?.toLowerCase().includes(q))
-  }, [members, search])
+    const base = q ? members.filter((m) => m.full_name?.toLowerCase().includes(q) || m.email?.toLowerCase().includes(q)) : members
+    return [...base].sort((a, b) => {
+      const [aStatus, aGrade] = memberSortKey(a.id)
+      const [bStatus, bGrade] = memberSortKey(b.id)
+      if (aStatus !== bStatus) return aStatus - bStatus
+      if (aGrade !== bGrade) return aGrade - bGrade
+      return (a.full_name ?? '').localeCompare(b.full_name ?? '', 'ja')
+    })
+  }, [members, search, assignmentsByProfile, valuesById])
 
   const selfMember = members?.find((m) => m.id === user?.id)
   const selfAssignedValueIds = new Set(assignmentsByProfile[user?.id] ?? [])
