@@ -127,7 +127,9 @@ export default function AppShell({ user }) {
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
         <Link to="/" className="flex items-center gap-2.5 px-6 py-6">
           <div>
-            <p className="text-base font-black leading-tight tracking-tight">Wander Cycling</p>
+            <p className="text-xl leading-tight" style={{ fontFamily: "'Amsterdam Three', cursive" }}>
+              Wander Cycling
+            </p>
             <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">University Club</p>
           </div>
         </Link>
@@ -164,7 +166,9 @@ export default function AppShell({ user }) {
       <header className="sticky top-0 z-20 border-b border-border/60 bg-background/80 backdrop-blur-md md:hidden">
         <div className="flex items-center justify-between px-5 py-4">
           <Link to="/" className="flex items-center gap-2">
-            <span className="text-lg font-black tracking-tight">Wander Cycling</span>
+            <span className="text-2xl" style={{ fontFamily: "'Amsterdam Three', cursive" }}>
+              Wander Cycling
+            </span>
           </Link>
           <div className="flex items-center gap-1.5">
             <Button variant="ghost" size="icon" asChild aria-label="緊急連絡">
