@@ -7,7 +7,17 @@ const LINE_REPLY_URL = 'https://api.line.me/v2/bot/message/reply'
 const LINE_PUSH_URL = 'https://api.line.me/v2/bot/message/push'
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages'
 const ANTHROPIC_MODEL = 'claude-haiku-4-5-20251001'
-const MAX_TOOL_ROUNDS = 4
+const MAX_TOOL_ROUNDS = 8
+
+// Anthropic-hosted server tools — Claude decides when to call these, and the
+// API executes them itself (no round-trip through executeTool). Basic
+// (non-dynamic-filtering) variants: dynamic filtering requires Opus/Sonnet
+// 4.6+, and Haiku 4.5 doesn't need it here since these are one-off lookups,
+// not heavy multi-page research.
+const SERVER_TOOLS = [
+  { type: 'web_search_20250305', name: 'web_search', max_uses: 3 },
+  { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 3 },
+]
 const DEFAULT_PERSONA =
   'あなたはサイクリング部「WanderCycling」のAI秘書です。部員からのLINEメッセージに、親しみやすく簡潔な日本語で答えてください。ツールで取得した情報だけを事実として話し、憶測で予定や部員情報を作らないでください。'
 
@@ -117,6 +127,37 @@ const BASE_TOOLS = [
       },
       required: ['term', 'definition'],
     },
+  },
+  {
+    name: 'search_club_knowledge',
+    description:
+      '部の知識ベース（過去の旅程・場所の情報・予算感・文化・ノウハウなど）をキーワードで検索する。旅程相談や「前に行った時どうだった？」のような質問に答える前に、まずこれで関連情報がないか確認するとよい。',
+    input_schema: {
+      type: 'object',
+      properties: { query: { type: 'string', description: '検索キーワード（例: "長万部", "国境越え", "テント泊"）' } },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'save_club_knowledge',
+    description:
+      '部にとって今後役立ちそうな知識（場所の情報、旅程のコツ、予算感、過去のトラブルとその対処、部の文化・慣習など）を新しく知ったときに知識ベースに記録する。承認や確認は不要、気づいたら自分の判断で保存してよい。同じtopicで再度保存すると内容が上書きされる。重要: 特定個人についての私的な情報（誰が何をした、個人の連絡先や体調など）は保存しないこと。場所・イベント・ノウハウなど部として再利用できる知識に限る。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        category: { type: 'string', description: '例: "旅程", "場所", "予算", "文化", "安全", "その他"' },
+        topic: { type: 'string', description: '短い見出し（例: "長万部の温泉事情"）。既存と同じ見出しなら上書き更新される。' },
+        content: { type: 'string', description: '知識の内容。具体的であるほどよい。' },
+        source: { type: 'string', description: '情報の出所（例: "LINE会話", "Web検索", "引き継ぎ資料"）、任意。' },
+      },
+      required: ['category', 'topic', 'content'],
+    },
+  },
+  {
+    name: 'list_handover_resources',
+    description:
+      '資料ページに登録されている引き継ぎ資料・旅行Tipsなどの外部リンク一覧を取得する。旅程の物理的な段取り（国境越え、宿泊、装備など）を考えるとき、過去の引き継ぎ資料に載っていそうであれば、まずこれでリンクを確認し、必要なら中身をweb_fetchで読みに行くとよい。',
+    input_schema: { type: 'object', properties: {} },
   },
 ]
 
@@ -324,6 +365,52 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     return { ok: true }
   }
 
+  if (name === 'search_club_knowledge') {
+    const query = String(input.query ?? '').trim()
+    if (!query) return { error: 'queryが空です' }
+    const { data, error } = await supabase
+      .from('club_knowledge')
+      .select('category, topic, content')
+      .or(`topic.ilike.%${query}%,content.ilike.%${query}%,category.ilike.%${query}%`)
+      .order('updated_at', { ascending: false })
+      .limit(10)
+    if (error) return { error: error.message }
+    if (!data || data.length === 0) return { matched: 0, message: '該当する知識は見つかりませんでした。' }
+    return { matched: data.length, results: data }
+  }
+
+  if (name === 'save_club_knowledge') {
+    const category = String(input.category ?? '').trim()
+    const topic = String(input.topic ?? '').trim()
+    const content = String(input.content ?? '').trim()
+    if (!category || !topic || !content) return { error: 'category, topic, contentは必須です' }
+    const { error } = await supabase.from('club_knowledge').upsert(
+      {
+        category,
+        topic,
+        content,
+        source: input.source ? String(input.source) : null,
+        added_by: ctx.profileId,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'topic' }
+    )
+    if (error) return { error: error.message }
+    return { ok: true, topic }
+  }
+
+  if (name === 'list_handover_resources') {
+    const { data, error } = await supabase
+      .from('external_links')
+      .select('category, label, url')
+      .eq('is_active', true)
+      .in('category', ['引継ぎ資料', '旅行Tips'])
+      .order('category')
+      .order('sort_order')
+    if (error) return { error: error.message }
+    return { resources: data ?? [] }
+  }
+
   if (name === 'create_event') {
     if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
     const startAt = jstDateTimeToIso(input.start_at)
@@ -464,7 +551,7 @@ async function callClaude(system: string, messages: unknown[], tools: unknown[],
       'x-api-key': apiKey,
       'anthropic-version': '2023-06-01',
     },
-    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 1024, system, messages, tools }),
+    body: JSON.stringify({ model: ANTHROPIC_MODEL, max_tokens: 2048, system, messages, tools }),
   })
   if (!res.ok) {
     throw new Error(`Anthropic API error: ${res.status} ${await res.text()}`)
@@ -478,16 +565,23 @@ async function runAssistant(
   ctx: { profileId: string; tier: string; callerName: string; callerRole: string; persona: string; glossary: { term: string; definition: string }[] },
   apiKey: string
 ) {
-  const tools = ctx.tier === 'executive' ? [...BASE_TOOLS, ...EXECUTIVE_TOOLS] : BASE_TOOLS
+  const customTools = ctx.tier === 'executive' ? [...BASE_TOOLS, ...EXECUTIVE_TOOLS] : BASE_TOOLS
+  const tools = [...customTools, ...SERVER_TOOLS]
   const glossaryText = ctx.glossary.length
     ? `\n\n[部内用語集 — これまでの会話で学んだ言葉]\n${ctx.glossary.map((g) => `・${g.term}: ${g.definition}`).join('\n')}`
     : ''
-  const system = `${ctx.persona}\n\n[話しかけている部員の情報]\n名前: ${ctx.callerName}\n役職: ${ctx.callerRole}\n権限区分: ${ctx.tier}\n今日の日付: ${new Date().toISOString().slice(0, 10)}\nこの情報は事実として使ってよいが、部員本人に「あなたは○○さんですね」のように毎回確認する必要はない。${glossaryText}\n\n重要: ツール呼び出しが必要な用件だけでなく、雑談・しりとりなどの言葉遊び・ちょっとした相談にも普通に応じてよい。「秘書だからできない」のように用件外だからと安易に断らないこと。ただし、返信の中で事実として述べる内容（予定・タスク・部員情報など）は、ツールの実行結果に含まれるものだけにすること。実行していない操作をあたかも実行したかのように書いてはいけない。複数の依頼のうち一部しか実行できなかった場合は、実行できた分とできなかった分を正直に分けて伝えること。会話の中で部内だけで通じる言葉・ネタ・言い回しに気づいたら、save_glossary_termで記録しておくとよい。`
+  const itineraryGuidance = `\n\n[旅程の相談を受けたときの考え方]\n合宿・遠征などの旅程相談では、「何時にどこへ移動する」だけでなく、現地で実際に起こりうる詰まりどころまで具体的に考えること。例えば「オシュからカシュガルへ国境を越える」なら、次のレベルの粒度で考える:\n・国境の営業時間や当日の状況はネットに出ていないことが多いので、前日に現地の人に聞く、朝一番で向かう、ダメだった場合の予備日を用意する、といった段取りを立てる\n・両替・支払いをどこで済ませるか（窓口の場所、現金の要否）を事前に把握しておく\n・現地で何も手に入らない前提で、水・食料を余分に持っておく\n・集合場所や検問で自分だけ置いていかれないように、誰がどう確認を取るかを決めておく\nこのように「情報が事前に取れない・不確実な場面でどう備えるか」を具体的に提案すること。抽象的な注意喚起（「気をつけましょう」など）で終わらせないこと。関連しそうな情報は、search_club_knowledgeや資料ページのlist_handover_resources（必要ならweb_fetchで中身を読む）で過去の知見を確認し、現地の営業時間・料金・最新情報などネットで調べられそうなことはweb_searchを使って調べること。旅程相談の中で今後も使えそうな知見を得たら、save_club_knowledgeで記録しておく。`
+  const system = `${ctx.persona}\n\n[話しかけている部員の情報]\n名前: ${ctx.callerName}\n役職: ${ctx.callerRole}\n権限区分: ${ctx.tier}\n今日の日付: ${new Date().toISOString().slice(0, 10)}\nこの情報は事実として使ってよいが、部員本人に「あなたは○○さんですね」のように毎回確認する必要はない。${glossaryText}${itineraryGuidance}\n\n重要: ツール呼び出しが必要な用件だけでなく、雑談・しりとりなどの言葉遊び・ちょっとした相談にも普通に応じてよい。「秘書だからできない」のように用件外だからと安易に断らないこと。ただし、返信の中で事実として述べる内容（予定・タスク・部員情報など）は、ツールの実行結果に含まれるものだけにすること。実行していない操作をあたかも実行したかのように書いてはいけない。複数の依頼のうち一部しか実行できなかった場合は、実行できた分とできなかった分を正直に分けて伝えること。会話の中で部内だけで通じる言葉・ネタ・言い回しに気づいたら、save_glossary_termで記録しておくとよい。場所・旅程・ノウハウなど部として再利用できそうな知識に気づいたら、save_club_knowledgeで記録しておくとよい(特定個人の私的な情報は保存しないこと。承認や確認は不要)。`
   const messages = [...history, { role: 'user', content: userText }]
 
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
     const response = await callClaude(system, messages, tools, apiKey)
     messages.push({ role: 'assistant', content: response.content })
+
+    // pause_turn happens when a server tool (web_search/web_fetch) is still
+    // running (e.g. a long search) — resume by resending the same messages
+    // unchanged, with no new user turn, rather than treating it as final.
+    if (response.stop_reason === 'pause_turn') continue
 
     if (response.stop_reason !== 'tool_use') {
       const textBlock = response.content.find((b: { type: string }) => b.type === 'text')
