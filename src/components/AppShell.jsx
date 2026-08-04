@@ -93,35 +93,36 @@ export default function AppShell({ user }) {
     await supabase.auth.signOut()
   }
 
-  // Personal background (set per-user in 設定 > 背景画像). Rendered as its own
-  // fixed, full-viewport layer behind everything rather than a background-*
-  // on the scrolling container -- `background-attachment: fixed` doesn't
-  // stay put on mobile Safari, so a separate `position: fixed` element is
-  // used instead to guarantee it never scrolls with the content. Layered
-  // under a background-colored scrim so cards (which stay fully opaque via
-  // bg-card) remain the primary readable surface and any text sitting
-  // directly on the shell keeps enough contrast.
-  const backgroundStyle = backgroundUrl
-    ? {
-        backgroundImage: `linear-gradient(hsl(var(--background) / 0.75), hsl(var(--background) / 0.75)), url(${backgroundUrl})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-        backgroundRepeat: 'no-repeat',
-        // Force this layer onto its own GPU compositing layer -- without
-        // this, `position: fixed` visibly lags/jumps for a frame during
-        // fast swipes and rubber-band overscroll on iOS Safari, since the
-        // browser otherwise has to repaint it relative to page content on
-        // every scroll frame instead of compositing it independently.
-        transform: 'translateZ(0)',
-        WebkitTransform: 'translateZ(0)',
-        willChange: 'transform',
-      }
-    : undefined
+  // Personal background (set per-user in 設定 > 背景画像), falling back to a
+  // fixed default image when the user hasn't set one, so the shell never
+  // looks bare. Rendered as its own fixed, full-viewport layer behind
+  // everything rather than a background-* on the scrolling container --
+  // `background-attachment: fixed` doesn't stay put on mobile Safari, so a
+  // separate `position: fixed` element is used instead to guarantee it
+  // never scrolls with the content. Layered under a background-colored
+  // scrim so cards (which stay fully opaque via bg-card) remain the
+  // primary readable surface and any text sitting directly on the shell
+  // keeps enough contrast.
+  const effectiveBackgroundUrl = backgroundUrl || '/default-background.jpg'
+  const backgroundStyle = {
+    backgroundImage: `linear-gradient(hsl(var(--background) / 0.75), hsl(var(--background) / 0.75)), url(${effectiveBackgroundUrl})`,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    backgroundRepeat: 'no-repeat',
+    // Force this layer onto its own GPU compositing layer -- without
+    // this, `position: fixed` visibly lags/jumps for a frame during
+    // fast swipes and rubber-band overscroll on iOS Safari, since the
+    // browser otherwise has to repaint it relative to page content on
+    // every scroll frame instead of compositing it independently.
+    transform: 'translateZ(0)',
+    WebkitTransform: 'translateZ(0)',
+    willChange: 'transform',
+  }
 
   return (
     <>
       {profile && profile.name_confirmed === false && <NameConfirmDialog profile={profile} />}
-      {backgroundUrl && <div className="fixed inset-x-0 top-0 -z-10 h-svh w-full" style={backgroundStyle} />}
+      <div className="fixed inset-x-0 top-0 -z-10 h-svh w-full" style={backgroundStyle} />
       <div className="min-h-svh md:flex">
       {/* Desktop sidebar */}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 flex-col border-r border-border/60 bg-card md:flex">
