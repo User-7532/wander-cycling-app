@@ -300,7 +300,7 @@ const EXECUTIVE_TOOLS = [
   {
     name: 'create_tasks_bulk',
     description:
-      '同じタスクを、条件に一致する複数の部員にまとめて割り当てる（アプリ管理者のみ実行可能）。「60代全員に部費のタスクを割り当てて」のような依頼で使う。単一の部員へのタスク割り当てにはcreate_taskを使うこと。締め切りは任意項目だが、ユーザーが締め切りに言及したのに具体的な日時（時刻含む）を言っていない場合は、due_atを0:00などで勝手に補完せず、先に本人に確認すること。締め切りの話が一切ない場合はdue_atを省略してよい。',
+      '同じタスクを、条件に一致する複数の部員にまとめて割り当てる（アプリ管理者のみ実行可能）。「60代全員に部費のタスクを割り当てて」のような依頼で使う。単一の部員へのタスク割り当てにはcreate_taskを使うこと。締め切りは任意項目だが、ユーザーが締め切りに言及したのに具体的な日時（時刻含む）を言っていない場合は、due_atを0:00などで勝手に補完せず、先に本人に確認すること。締め切りの話が一切ない場合はdue_atを省略してよい。重要: 対象者が2人以上のとき、「各自が自分の分をやる」タスクなのか「誰か1人がやれば全員分終わり」の協働タスク（例: 花火購入係を3人立てて、誰か1人が買えば全員完了）なのか、依頼の内容から判断がつかない場合は先に本人に確認すること。判断がついたらsharedを正しく設定する。',
     input_schema: {
       type: 'object',
       properties: {
@@ -310,6 +310,11 @@ const EXECUTIVE_TOOLS = [
           items: { type: 'string' },
           description:
             'タスクを割り当てる相手を指定するクエリのリスト（必須）。role名（例: "備品", "渉外"）、"三役"（＝is_yakuin役職者全員、"役員"も同義）、属性の値（例: "60代"）、部員の名前（部分一致）を自由に混在できる。',
+        },
+        shared: {
+          type: 'boolean',
+          description:
+            '協働タスクにするか（デフォルトfalse＝各自が別々に完了させる通常のタスク）。trueにすると、対象者のうち誰か1人がタスクを完了にした時点で、他の対象者のタスクも自動的に完了になる。',
         },
         due_at: {
           type: 'string',
@@ -834,16 +839,19 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     }
 
     const dueAt = jstDateTimeToIso(input.due_at)
+    const shared = input.shared === true && assignees.length > 1
+    const taskGroupId = shared ? crypto.randomUUID() : null
     const rows = assignees.map((a) => ({
       title: input.title,
       assigned_to: a.id,
       due_at: dueAt,
       priority: input.priority || 'medium',
       created_by: ctx.profileId,
+      task_group_id: taskGroupId,
     }))
     const { error } = await supabase.from('tasks').insert(rows)
     if (error) return { error: error.message }
-    return { ok: true, assignees: assignees.map((a) => a.full_name), count: assignees.length }
+    return { ok: true, assignees: assignees.map((a) => a.full_name), count: assignees.length, shared }
   }
 
   if (name === 'remind_incomplete_task_holders') {

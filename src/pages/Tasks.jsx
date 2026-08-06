@@ -63,6 +63,11 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       : EMPTY_FORM
   )
   const [bulkMode, setBulkMode] = useState(false)
+  // 複数人に同時にアサインするとき、各自が別々に完了させる通常タスクか、
+  // 誰か1人が完了したら全員分が完了になる協働タスクか（例:「花火購入」— 誰かが
+  // 買えば全員にとって終わり）。task_group_idを共有する行として作成し、実際の
+  // 連鎖完了はDBトリガー(propagate_shared_task_completion, 0059)側で行う。
+  const [sharedTask, setSharedTask] = useState(false)
   const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
   const [filterRoleId, setFilterRoleId] = useState('')
   // その他、閲覧できる人（task_visible_to）を選ぶための、上の属性/役職フィルタ
@@ -365,6 +370,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
 
   const bulkSave = useMutation({
     mutationFn: async () => {
+      const taskGroupId = sharedTask && selectedProfiles.length > 1 ? crypto.randomUUID() : null
       const rows = selectedProfiles.map((p) => ({
         id: crypto.randomUUID(),
         title: form.title,
@@ -373,6 +379,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         priority: form.priority,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
         visibility: form.visibility,
+        task_group_id: taskGroupId,
       }))
       const { error } = await supabase.from('tasks').insert(rows)
       if (error) throw error
@@ -389,6 +396,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       setForm(EMPTY_FORM)
       setBulkMode(false)
+      setSharedTask(false)
       setFilters([{ ...EMPTY_FILTER }])
       setFilterRoleId('')
       setSelectedIds(new Set())
@@ -661,6 +669,23 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                   ))}
                 </div>
               </div>
+            </div>
+          )}
+          {mode === 'create' && bulkMode && selectedProfiles.length > 1 && (
+            <div className="space-y-1.5 rounded-xl border border-input p-3">
+              <Label>進行方式</Label>
+              <Select value={sharedTask ? 'shared' : 'individual'} onValueChange={(v) => setSharedTask(v === 'shared')}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="individual">別々に進行（全員が自分の分を完了させる）</SelectItem>
+                  <SelectItem value="shared">協働タスク（誰か1人が完了したら全員分が完了になる）</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                例:「花火購入」のように、誰か1人がやれば全員にとって終わりのタスクは協働タスクを選んでください。
+              </p>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
@@ -970,6 +995,7 @@ export default function Tasks() {
                   {isExecutive && t.visibility === 'all' && (
                     <Badge variant="secondary">{VISIBILITY_LABEL.all}</Badge>
                   )}
+                  {t.task_group_id && <Badge variant="secondary">協働タスク</Badge>}
                   <Badge variant="outline" className={PRIORITY_CLASS[t.priority]}>
                     優先度: {PRIORITY_LABEL[t.priority]}
                   </Badge>
