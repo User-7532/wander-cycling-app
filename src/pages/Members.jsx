@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useOutletContext } from 'react-router-dom'
-import { AtSign, ChevronDown, MapPin, Pencil, Phone, PhoneCall, Search, Tags, UserRound, Users } from 'lucide-react'
+import { AtSign, ChevronDown, MapPin, Pencil, Phone, PhoneCall, Search, Tags, Trash2, UserRound, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
@@ -12,7 +12,7 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Skeleton } from '@/components/ui/skeleton'
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
+import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 
 // club_roles doesn't have a color column (unlike member_attributes), so
 // role badges are colored by tier using this fixed palette -- mirrors the
@@ -422,6 +422,60 @@ function DepartedMembersSection() {
   )
 }
 
+// Executive-only. Same reversible shape as the self-service 退部する button
+// in More.jsx (leave_club()) -- just callable against someone else, via
+// remove_member() (0056_admin_remove_member.sql). Never shown for the
+// viewer's own card; self-removal already has its own dedicated flow.
+function RemoveMemberButton({ member }) {
+  const [open, setOpen] = useState(false)
+  const queryClient = useQueryClient()
+
+  const remove = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.rpc('remove_member', { target_profile_id: member.id })
+      if (error) throw error
+    },
+    onSuccess: () => {
+      setOpen(false)
+      toast.success('退部処理をしました')
+      queryClient.invalidateQueries({ queryKey: ['members', 'full'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'directory'] })
+      queryClient.invalidateQueries({ queryKey: ['members', 'departed'] })
+    },
+    onError: (err) => toast.error(`退部処理に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="削除">
+        <Trash2 className="h-4 w-4" />
+      </button>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{member.full_name}さんを退部扱いにしますか？</DialogTitle>
+            <DialogDescription>
+              部員名簿など アプリ内のあらゆる場所から見えなくなり、保持している役職はすべて解除されます。
+              間違えた場合は、メンバーページ下部の「退部したメンバー」から復元できます。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline" disabled={remove.isPending}>
+                キャンセル
+              </Button>
+            </DialogClose>
+            <Button variant="destructive" onClick={() => remove.mutate()} disabled={remove.isPending}>
+              退部扱いにする
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  )
+}
+
 export default function Members() {
   const { isExecutive, user } = useOutletContext()
   const [search, setSearch] = useState('')
@@ -642,11 +696,12 @@ export default function Members() {
                         <Tags className="h-4 w-4" />
                       </button>
                     )}
-                    {isExecutive && (
+                    {canManageMembers && (
                       <button onClick={() => setEditing(m)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
                         <Pencil className="h-4 w-4" />
                       </button>
                     )}
+                    {canManageMembers && !isSelf && <RemoveMemberButton member={m} />}
                   </div>
                 </div>
                 <div className="mb-3 flex flex-wrap gap-1.5">
@@ -691,7 +746,7 @@ export default function Members() {
         })}
       </div>
 
-      {isExecutive && <DepartedMembersSection />}
+      {canManageMembers && <DepartedMembersSection />}
 
       <EditMemberDialog
         member={editing}
