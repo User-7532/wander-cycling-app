@@ -21,7 +21,26 @@ const DialogOverlay = React.forwardRef(({ className, ...props }, ref) => (
 ))
 DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 
-const DialogContent = React.forwardRef(({ className, children, ...props }, ref) => (
+// Radix focuses the first focusable element in the dialog on open (good
+// for a11y -- you can start typing immediately) -- but when that's a
+// pre-filled title input (edit dialogs), some browsers select the whole
+// value on programmatic focus, so editing a title started with it
+// highlighted and one keystroke away from being wiped out. Keep the
+// auto-focus, just collapse the cursor to the end of any existing value
+// instead of leaving it selected.
+function collapseCursorOnOpenAutoFocus(event) {
+  event.preventDefault()
+  const field = event.currentTarget.querySelector('input, textarea')
+  if (field) {
+    field.focus()
+    if (typeof field.setSelectionRange === 'function') {
+      const end = field.value.length
+      field.setSelectionRange(end, end)
+    }
+  }
+}
+
+const DialogContent = React.forwardRef(({ className, children, onPointerDownOutside, onOpenAutoFocus, ...props }, ref) => (
   <DialogPortal>
     <DialogOverlay />
     <DialogPrimitive.Content
@@ -30,6 +49,12 @@ const DialogContent = React.forwardRef(({ className, children, ...props }, ref) 
         'fixed left-[50%] top-[50%] z-50 grid max-h-[85vh] w-[calc(100%-2rem)] max-w-md translate-x-[-50%] translate-y-[-50%] gap-4 overflow-y-auto rounded-2xl border bg-background p-6 shadow-lg duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95',
         className
       )}
+      // Editing dialogs across the app were closing (and losing unsaved
+      // input) on an accidental tap outside the box -- only the explicit X
+      // button (or Escape) should close it now. A caller can still opt back
+      // in by passing its own onPointerDownOutside.
+      onPointerDownOutside={onPointerDownOutside ?? ((e) => e.preventDefault())}
+      onOpenAutoFocus={onOpenAutoFocus ?? collapseCursorOnOpenAutoFocus}
       {...props}
     >
       {children}
