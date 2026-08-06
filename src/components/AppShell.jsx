@@ -71,6 +71,7 @@ export default function AppShell({ user }) {
   const roleLabel = profile?.club_roles?.label_ja
   const isExecutive = profile?.club_roles?.tier === 'executive'
   const isOfficerPlus = ['executive', 'officer'].includes(profile?.club_roles?.tier)
+  const isYakuin = !!profile?.club_roles?.is_yakuin
   const [backgroundUrl, setBackgroundUrl] = useState(null)
 
   useEffect(() => {
@@ -190,7 +191,7 @@ export default function AppShell({ user }) {
 
       <div className="flex-1 md:pl-64">
         <main className="pb-20 md:pb-8">
-          <Outlet context={{ user, profile, isOfficerPlus, isExecutive }} />
+          <Outlet context={{ user, profile, isOfficerPlus, isExecutive, isYakuin }} />
         </main>
       </div>
 

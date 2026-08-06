@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, useOutletContext } from 'react-router-dom'
@@ -24,7 +24,8 @@ const PRIORITY_CLASS = {
   medium: 'border-primary/40 text-primary',
   low: 'border-muted-foreground/30 text-muted-foreground',
 }
-const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'medium', due_at: '' }
+const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'medium', due_at: '', visibility: 'restricted' }
+const VISIBILITY_LABEL = { all: '全員に公開', restricted: 'アプリ管理者・三役・担当者のみ' }
 
 // tasks.due_at is a timestamptz (UTC ISO string). <input type="datetime-local">
 // needs/returns a timezone-less "YYYY-MM-DDTHH:mm" string in local time.
@@ -51,12 +52,24 @@ const EMPTY_FILTER = { attributeId: '', valueId: '' }
 function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(
     mode === 'edit'
-      ? { title: task.title, description: task.description || '', assigned_to: task.assigned_to || '', priority: task.priority, due_at: toLocalInputValue(task.due_at) }
+      ? {
+          title: task.title,
+          description: task.description || '',
+          assigned_to: task.assigned_to || '',
+          priority: task.priority,
+          due_at: toLocalInputValue(task.due_at),
+          visibility: task.visibility,
+        }
       : EMPTY_FORM
   )
   const [bulkMode, setBulkMode] = useState(false)
   const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
   const [filterRoleId, setFilterRoleId] = useState('')
+  // その他、閲覧できる人（task_visible_to）を選ぶための、上の属性/役職フィルタ
+  // と同じ仕組みの別インスタンス。selectedIds（一括作成の対象者）とは独立。
+  const [visFilters, setVisFilters] = useState([{ ...EMPTY_FILTER }])
+  const [visFilterRoleId, setVisFilterRoleId] = useState('')
+  const [visibleToIds, setVisibleToIds] = useState([])
   // selectedIds is the actual bulk-create target group. It is NOT derived
   // live from the filter condition below -- the filter condition is a
   // preview of who an "適用" click would affect. Clicking apply flips
@@ -66,22 +79,57 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const queryClient = useQueryClient()
 
+  // Existing task_visible_to rows, for prefilling visibleToIds in edit mode
+  // (same shape as Schedule.jsx's existingInvitees / event_invitees).
+  const { data: existingVisibleTo } = useQuery({
+    queryKey: ['task_visible_to', task?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('task_visible_to').select('profile_id').eq('task_id', task.id)
+      if (error) throw error
+      return data.map((r) => r.profile_id)
+    },
+    enabled: mode === 'edit' && open && task.visibility === 'restricted',
+  })
+
+  useEffect(() => {
+    if (existingVisibleTo) setVisibleToIds(existingVisibleTo)
+  }, [existingVisibleTo])
+
   const save = useMutation({
     mutationFn: async () => {
+      const taskId = mode === 'edit' ? task.id : crypto.randomUUID()
       const payload = {
         title: form.title,
         description: form.description || null,
         assigned_to: form.assigned_to || null,
         priority: form.priority,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+        visibility: form.visibility,
       }
-      const { error } = mode === 'edit' ? await supabase.from('tasks').update(payload).eq('id', task.id) : await supabase.from('tasks').insert(payload)
-      if (error) throw error
+      if (mode === 'edit') {
+        const { error } = await supabase.from('tasks').update(payload).eq('id', taskId)
+        if (error) throw error
+        await supabase.from('task_visible_to').delete().eq('task_id', taskId)
+      } else {
+        const { error } = await supabase.from('tasks').insert({ id: taskId, ...payload })
+        if (error) throw error
+      }
+
+      if (form.visibility === 'restricted' && visibleToIds.length > 0) {
+        const { error: visError } = await supabase.from('task_visible_to').insert(visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })))
+        if (visError) throw visError
+      }
     },
     onSuccess: () => {
       toast.success(mode === 'edit' ? '更新しました' : 'タスクを追加しました')
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
-      if (mode === 'create') setForm(EMPTY_FORM)
+      queryClient.invalidateQueries({ queryKey: ['task_visible_to'] })
+      if (mode === 'create') {
+        setForm(EMPTY_FORM)
+        setVisFilters([{ ...EMPTY_FILTER }])
+        setVisFilterRoleId('')
+        setVisibleToIds([])
+      }
       onOpenChange(false)
     },
     onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
@@ -96,7 +144,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: mode === 'create' && bulkMode,
+    // Also needed for the "その他、閲覧できる人を追加" picker under visibility='restricted'.
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
   })
 
   const { data: attributeValues } = useQuery({
@@ -106,7 +155,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: mode === 'create' && bulkMode,
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
   })
 
   // Role-based bulk selection (separate from the AND-chained attribute
@@ -119,7 +168,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: mode === 'create' && bulkMode,
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
   })
 
   const validFilters = filters.filter((f) => f.attributeId && f.valueId)
@@ -222,17 +271,117 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     setSelectedIds(new Set())
   }
 
+  // Same AND-chained attribute-filter matching as matchedProfiles above,
+  // but for the "その他、閲覧できる人を追加" (task_visible_to) picker shown
+  // when visibility='restricted'. Independent of the bulk-assign filters.
+  const validVisFilters = visFilters.filter((f) => f.attributeId && f.valueId)
+  const activeVisValueIds = validVisFilters.map((f) => f.valueId)
+  const visFilterKey = activeVisValueIds.join(',')
+
+  const { data: visMatchedProfiles, isFetching: visMatchingLoading } = useQuery({
+    queryKey: ['vis-task-candidates', visFilterKey],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('profile_attribute_values')
+        .select('profile_id, attribute_value_id, profile:profiles(id, full_name)')
+        .in('attribute_value_id', activeVisValueIds)
+      if (error) throw error
+      const requiredIds = new Set(activeVisValueIds)
+      const byProfile = new Map()
+      for (const row of data) {
+        if (!row.profile) continue
+        const entry = byProfile.get(row.profile_id) || { profile: row.profile, values: new Set() }
+        entry.values.add(row.attribute_value_id)
+        byProfile.set(row.profile_id, entry)
+      }
+      return [...byProfile.values()]
+        .filter((entry) => [...requiredIds].every((id) => entry.values.has(id)))
+        .map((entry) => entry.profile)
+        .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ja'))
+    },
+    enabled: open && form.visibility === 'restricted' && validVisFilters.length > 0 && validVisFilters.length === visFilters.length,
+  })
+
+  function updateVisFilter(idx, patch) {
+    setVisFilters((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
+  }
+  function addVisFilter() {
+    setVisFilters((prev) => [...prev, { ...EMPTY_FILTER }])
+  }
+  function removeVisFilter(idx) {
+    setVisFilters((prev) => prev.filter((_, i) => i !== idx))
+  }
+  function toggleVisibleTo(id) {
+    setVisibleToIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+  function applyVisFilterToggle() {
+    const ids = (visMatchedProfiles ?? []).map((p) => p.id)
+    if (ids.length === 0) return
+    const next = new Set(visibleToIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setVisibleToIds([...next])
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+  async function applyVisRoleFilter() {
+    if (!visFilterRoleId) return
+    const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', visFilterRoleId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
+    if (ids.length === 0) return
+    const next = new Set(visibleToIds)
+    let added = 0
+    let removed = 0
+    for (const id of ids) {
+      if (next.has(id)) {
+        next.delete(id)
+        removed++
+      } else {
+        next.add(id)
+        added++
+      }
+    }
+    setVisibleToIds([...next])
+    toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+  function selectAllVisibleTo() {
+    setVisibleToIds((members ?? []).map((m) => m.id))
+  }
+  function deselectAllVisibleTo() {
+    setVisibleToIds([])
+  }
+
   const bulkSave = useMutation({
     mutationFn: async () => {
       const rows = selectedProfiles.map((p) => ({
+        id: crypto.randomUUID(),
         title: form.title,
         description: form.description || null,
         assigned_to: p.id,
         priority: form.priority,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+        visibility: form.visibility,
       }))
       const { error } = await supabase.from('tasks').insert(rows)
       if (error) throw error
+
+      if (form.visibility === 'restricted' && visibleToIds.length > 0) {
+        const visRows = rows.flatMap((r) => visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })))
+        const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
+        if (visError) throw visError
+      }
       return rows.length
     },
     onSuccess: (count) => {
@@ -243,6 +392,9 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setFilters([{ ...EMPTY_FILTER }])
       setFilterRoleId('')
       setSelectedIds(new Set())
+      setVisFilters([{ ...EMPTY_FILTER }])
+      setVisFilterRoleId('')
+      setVisibleToIds([])
       onOpenChange(false)
     },
     onError: (err) => toast.error(`追加に失敗しました: ${err.message}`),
@@ -398,6 +550,119 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               </div>
             </div>
           )}
+          <div className="space-y-1.5">
+            <Label>公開範囲</Label>
+            <Select value={form.visibility} onValueChange={(v) => setForm({ ...form, visibility: v })}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{VISIBILITY_LABEL.all}</SelectItem>
+                <SelectItem value="restricted">{VISIBILITY_LABEL.restricted}</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-muted-foreground">
+              「{VISIBILITY_LABEL.restricted}」の場合でも、アプリ管理者・三役・担当者は常に閲覧できます。
+            </p>
+          </div>
+          {form.visibility === 'restricted' && (
+            <div className="space-y-3 rounded-lg border p-3">
+              <Label>その他、閲覧できる人を追加（任意）</Label>
+              {visFilters.map((f, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <Select value={f.attributeId} onValueChange={(v) => updateVisFilter(idx, { attributeId: v, valueId: '' })}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="属性" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributes?.map((a) => (
+                        <SelectItem key={a.id} value={a.id}>
+                          {a.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Select value={f.valueId} onValueChange={(v) => updateVisFilter(idx, { valueId: v })} disabled={!f.attributeId}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="値" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {attributeValues
+                        ?.filter((v) => v.attribute_id === f.attributeId)
+                        .map((v) => (
+                          <SelectItem key={v.id} value={v.id}>
+                            {v.value}
+                          </SelectItem>
+                        ))}
+                    </SelectContent>
+                  </Select>
+                  {visFilters.length > 1 && (
+                    <button type="button" onClick={() => removeVisFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={addVisFilter}>
+                  条件を追加（AND）
+                </Button>
+                <Button type="button" size="sm" variant="secondary" disabled={!visMatchedProfiles?.length} onClick={applyVisFilterToggle}>
+                  この条件で選択を切替
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+              </p>
+              {visMatchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
+              {!visMatchingLoading && validVisFilters.length > 0 && visMatchedProfiles?.length === 0 && (
+                <p className="text-xs text-muted-foreground">該当する部員がいません</p>
+              )}
+
+              <div className="space-y-2 border-t pt-3">
+                <Label>役職で絞り込む</Label>
+                <div className="flex items-center gap-2">
+                  <Select value={visFilterRoleId} onValueChange={setVisFilterRoleId}>
+                    <SelectTrigger className="flex-1">
+                      <SelectValue placeholder="役職" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clubRoles?.map((r) => (
+                        <SelectItem key={r.id} value={String(r.id)}>
+                          {r.label_ja}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button type="button" size="sm" variant="secondary" disabled={!visFilterRoleId} onClick={applyVisRoleFilter}>
+                    この条件で選択を切替
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-1.5 pt-2">
+                <div className="flex items-center justify-between">
+                  <Label>対象者（{visibleToIds.length}人選択中）</Label>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={selectAllVisibleTo}>
+                      全員選択
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={deselectAllVisibleTo}>
+                      全員解除
+                    </Button>
+                  </div>
+                </div>
+                <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+                  {members?.map((m) => (
+                    <label key={m.id} className="flex items-center gap-2 text-sm">
+                      <input type="checkbox" checked={visibleToIds.includes(m.id)} onChange={() => toggleVisibleTo(m.id)} />
+                      {m.full_name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>優先度</Label>
@@ -433,12 +698,21 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
 }
 
 export default function Tasks() {
-  const { user, profile } = useOutletContext()
+  const { user, profile, isYakuin } = useOutletContext()
   const isExecutive = profile?.club_roles?.tier === 'executive'
   const isOfficerPlus = ['executive', 'officer'].includes(profile?.club_roles?.tier)
   const queryClient = useQueryClient()
   const [createOpen, setCreateOpen] = useState(false)
   const [editing, setEditing] = useState(null)
+  // View-mode filter over the RLS-scoped task list, relevant mainly to
+  // 三役/アプリ管理者 who (per 0055_task_visibility.sql) can now see a
+  // broader set of tasks than just their own. Purely client-side.
+  const [viewFilter, setViewFilter] = useState('mine')
+  const [viewFilterProfileId, setViewFilterProfileId] = useState('')
+  const [viewFilterAttrId, setViewFilterAttrId] = useState('')
+  const [viewFilterValueId, setViewFilterValueId] = useState('')
+  const [viewFilterRoleId, setViewFilterRoleId] = useState('')
+  const canFilterView = isExecutive || isYakuin
 
   const { data: tasks, isLoading } = useQuery({
     queryKey: ['tasks'],
@@ -460,8 +734,69 @@ export default function Tasks() {
       if (error) throw error
       return data
     },
-    enabled: isExecutive,
+    // isExecutive needs this for TaskFormDialog's assignee/visibility pickers;
+    // isYakuin needs it for the "特定の人" view filter below.
+    enabled: isExecutive || isYakuin,
   })
+
+  const { data: viewFilterAttributes } = useQuery({
+    queryKey: ['member_attributes', 'for-task-view-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attributes').select('id, label').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: canFilterView && viewFilter === 'condition',
+  })
+
+  const { data: viewFilterAttributeValues } = useQuery({
+    queryKey: ['member_attribute_values', 'for-task-view-filter', viewFilterAttrId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('member_attribute_values')
+        .select('id, value')
+        .eq('attribute_id', viewFilterAttrId)
+        .order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: !!viewFilterAttrId,
+  })
+
+  const { data: viewFilterClubRoles } = useQuery({
+    queryKey: ['club_roles', 'for-task-view-filter'],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('club_roles').select('id, label_ja').order('sort_order')
+      if (error) throw error
+      return data
+    },
+    enabled: canFilterView && viewFilter === 'condition',
+  })
+
+  // Profile ids matching the "条件を満たす人" condition. Role takes
+  // priority if both happen to be set (selecting one clears the other below).
+  const { data: viewFilterProfileIds } = useQuery({
+    queryKey: ['task-view-filter-profiles', viewFilterRoleId, viewFilterValueId],
+    queryFn: async () => {
+      if (viewFilterRoleId) {
+        const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', viewFilterRoleId)
+        if (error) throw error
+        return data.map((r) => r.profile_id)
+      }
+      const { data, error } = await supabase.from('profile_attribute_values').select('profile_id').eq('attribute_value_id', viewFilterValueId)
+      if (error) throw error
+      return data.map((r) => r.profile_id)
+    },
+    enabled: canFilterView && viewFilter === 'condition' && (!!viewFilterRoleId || !!viewFilterValueId),
+  })
+
+  const displayedTasks = !canFilterView
+    ? tasks
+    : (tasks ?? []).filter((t) => {
+        if (viewFilter === 'specific') return !!viewFilterProfileId && t.assigned_to === viewFilterProfileId
+        if (viewFilter === 'condition') return (viewFilterProfileIds ?? []).includes(t.assigned_to)
+        return t.assigned_to === profile?.id
+      })
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }) => {
@@ -504,6 +839,111 @@ export default function Tasks() {
         )}
       </div>
 
+      {canFilterView && (
+        <div className="mb-6 space-y-2 rounded-lg border p-3">
+          <Label>表示するタスク</Label>
+          <Select
+            value={viewFilter}
+            onValueChange={(v) => {
+              setViewFilter(v)
+              setViewFilterProfileId('')
+              setViewFilterAttrId('')
+              setViewFilterValueId('')
+              setViewFilterRoleId('')
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mine">自分のみ</SelectItem>
+              <SelectItem value="specific">特定の人</SelectItem>
+              <SelectItem value="condition">条件を満たす人</SelectItem>
+            </SelectContent>
+          </Select>
+          {viewFilter === 'specific' && (
+            <Select value={viewFilterProfileId} onValueChange={setViewFilterProfileId}>
+              <SelectTrigger>
+                <SelectValue placeholder="メンバーを選択" />
+              </SelectTrigger>
+              <SelectContent>
+                {members?.map((m) => (
+                  <SelectItem key={m.id} value={m.id}>
+                    {m.full_name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
+          {viewFilter === 'condition' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Select
+                  value={viewFilterAttrId}
+                  onValueChange={(v) => {
+                    setViewFilterAttrId(v)
+                    setViewFilterValueId('')
+                    setViewFilterRoleId('')
+                  }}
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="属性" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {viewFilterAttributes?.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>
+                        {a.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Select
+                  value={viewFilterValueId}
+                  onValueChange={(v) => {
+                    setViewFilterValueId(v)
+                    setViewFilterRoleId('')
+                  }}
+                  disabled={!viewFilterAttrId}
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="値" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {viewFilterAttributeValues?.map((v) => (
+                      <SelectItem key={v.id} value={v.id}>
+                        {v.value}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2 border-t pt-2">
+                <Label className="text-xs text-muted-foreground shrink-0">または役職</Label>
+                <Select
+                  value={viewFilterRoleId}
+                  onValueChange={(v) => {
+                    setViewFilterRoleId(v)
+                    setViewFilterAttrId('')
+                    setViewFilterValueId('')
+                  }}
+                >
+                  <SelectTrigger className="flex-1">
+                    <SelectValue placeholder="役職" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {viewFilterClubRoles?.map((r) => (
+                      <SelectItem key={r.id} value={String(r.id)}>
+                        {r.label_ja}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       {isLoading && (
         <div className="space-y-3">
           <Skeleton className="h-20 w-full" />
@@ -511,7 +951,7 @@ export default function Tasks() {
         </div>
       )}
 
-      {!isLoading && (!tasks || tasks.length === 0) && (
+      {!isLoading && (!displayedTasks || displayedTasks.length === 0) && (
         <Card className="flex flex-col items-center justify-center gap-2 border-dashed py-12 text-center">
           <ListTodo className="h-8 w-8 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">タスクはありません</p>
@@ -519,7 +959,7 @@ export default function Tasks() {
       )}
 
       <div className="space-y-3">
-        {tasks?.map((t, i) => {
+        {displayedTasks?.map((t, i) => {
           const overdue = isOverdue(t)
           return (
           <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
@@ -527,6 +967,9 @@ export default function Tasks() {
               <div className="mb-1.5 flex items-start justify-between gap-2">
                 <h3 className={cn('font-bold', t.status === 'done' && 'line-through')}>{t.title}</h3>
                 <div className="flex items-center gap-1.5">
+                  {isExecutive && t.visibility === 'all' && (
+                    <Badge variant="secondary">{VISIBILITY_LABEL.all}</Badge>
+                  )}
                   <Badge variant="outline" className={PRIORITY_CLASS[t.priority]}>
                     優先度: {PRIORITY_LABEL[t.priority]}
                   </Badge>
