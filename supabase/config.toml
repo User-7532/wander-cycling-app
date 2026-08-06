@@ -484,6 +484,12 @@ verify_jwt = false
 import_map = "./functions/notify-member-left/deno.json"
 entrypoint = "./functions/notify-member-left/index.ts"
 
+[functions.notify-task-status-change]
+enabled = true
+verify_jwt = false
+import_map = "./functions/notify-task-status-change/deno.json"
+entrypoint = "./functions/notify-task-status-change/index.ts"
+
 [functions.task-deadline-reminders]
 enabled = true
 verify_jwt = false
