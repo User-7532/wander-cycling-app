@@ -25,7 +25,11 @@ const PRIORITY_CLASS = {
   low: 'border-muted-foreground/30 text-muted-foreground',
 }
 const EMPTY_FORM = { title: '', description: '', assigned_to: '', priority: 'medium', due_at: '', visibility: 'restricted' }
-const VISIBILITY_LABEL = { all: '全員に公開', restricted: 'アプリ管理者・三役・担当者のみ' }
+const VISIBILITY_LABEL = {
+  all: '全員に公開',
+  restricted: 'アプリ管理者・三役・担当者のみ',
+  private: 'アプリ管理者・担当者のみ',
+}
 
 // tasks.due_at is a timestamptz (UTC ISO string). <input type="datetime-local">
 // needs/returns a timezone-less "YYYY-MM-DDTHH:mm" string in local time.
@@ -96,7 +100,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data.map((r) => r.profile_id)
     },
-    enabled: mode === 'edit' && open && task.visibility === 'restricted',
+    enabled: mode === 'edit' && open && task.visibility !== 'all',
   })
 
   useEffect(() => {
@@ -123,7 +127,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         if (error) throw error
       }
 
-      if (form.visibility === 'restricted' && visibleToIds.length > 0) {
+      if (form.visibility !== 'all' && visibleToIds.length > 0) {
         const { error: visError } = await supabase.from('task_visible_to').insert(visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })))
         if (visError) throw visError
       }
@@ -153,7 +157,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       return data
     },
     // Also needed for the "その他、閲覧できる人を追加" picker under visibility='restricted'.
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
   })
 
   const { data: attributeValues } = useQuery({
@@ -163,7 +167,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
   })
 
   // Role-based bulk selection (separate from the AND-chained attribute
@@ -176,7 +180,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility === 'restricted'),
+    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
   })
 
   const validFilters = filters.filter((f) => f.attributeId && f.valueId)
@@ -307,7 +311,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         .map((entry) => entry.profile)
         .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ja'))
     },
-    enabled: open && form.visibility === 'restricted' && validVisFilters.length > 0 && validVisFilters.length === visFilters.length,
+    enabled: open && form.visibility !== 'all' && validVisFilters.length > 0 && validVisFilters.length === visFilters.length,
   })
 
   function updateVisFilter(idx, patch) {
@@ -387,7 +391,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       const { error } = await supabase.from('tasks').insert(rows)
       if (error) throw error
 
-      if (form.visibility === 'restricted' && visibleToIds.length > 0) {
+      if (form.visibility !== 'all' && visibleToIds.length > 0) {
         const visRows = rows.flatMap((r) => visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })))
         const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
         if (visError) throw visError
@@ -570,13 +574,14 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               <SelectContent>
                 <SelectItem value="all">{VISIBILITY_LABEL.all}</SelectItem>
                 <SelectItem value="restricted">{VISIBILITY_LABEL.restricted}</SelectItem>
+                <SelectItem value="private">{VISIBILITY_LABEL.private}</SelectItem>
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              「{VISIBILITY_LABEL.restricted}」の場合でも、アプリ管理者・三役・担当者は常に閲覧できます。
+              「{VISIBILITY_LABEL.private}」は三役には自動的に共有されません。些細な個人タスクなど、通知を広げたくない場合に選んでください。
             </p>
           </div>
-          {form.visibility === 'restricted' && (
+          {form.visibility !== 'all' && (
             <div className="space-y-3 rounded-lg border p-3">
               <button
                 type="button"

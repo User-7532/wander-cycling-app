@@ -43,9 +43,40 @@ serve(async (req) => {
       : { data: [task] }
     const tasks = groupTasks ?? [task]
 
+    // アプリ管理者 always see every task regardless of tier (0055/0062);
+    // 三役 only see 'restricted' tier tasks, not 'private' ones -- mirror
+    // that distinction here so a 'private' task's notifications don't fan
+    // out to the whole 三役 group the way a 'restricted' one does.
+    const { data: executiveRoles } = await supabase.from('club_roles').select('id').eq('tier', 'executive')
+    const executiveProfileIds = new Set<string>()
+    if (executiveRoles && executiveRoles.length > 0) {
+      const { data: rows } = await supabase
+        .from('profile_roles')
+        .select('profile_id')
+        .in(
+          'club_role_id',
+          executiveRoles.map((r) => r.id)
+        )
+      for (const r of rows ?? []) executiveProfileIds.add(r.profile_id)
+    }
+
+    const { data: yakuinRoles } = await supabase.from('club_roles').select('id').eq('is_yakuin', true)
+    const yakuinProfileIds = new Set<string>()
+    if (yakuinRoles && yakuinRoles.length > 0) {
+      const { data: rows } = await supabase
+        .from('profile_roles')
+        .select('profile_id')
+        .in(
+          'club_role_id',
+          yakuinRoles.map((r) => r.id)
+        )
+      for (const r of rows ?? []) yakuinProfileIds.add(r.profile_id)
+    }
+
     const recipientIds = new Set<string>()
     for (const t of tasks) {
       if (t.assigned_to) recipientIds.add(t.assigned_to)
+      for (const id of executiveProfileIds) recipientIds.add(id)
 
       if (t.visibility === 'all') {
         const { data: everyone } = await supabase.from('profiles').select('id').is('left_at', null)
@@ -53,21 +84,10 @@ serve(async (req) => {
       } else {
         const { data: visibleTo } = await supabase.from('task_visible_to').select('profile_id').eq('task_id', t.id)
         for (const v of visibleTo ?? []) recipientIds.add(v.profile_id)
+        if (t.visibility === 'restricted') {
+          for (const id of yakuinProfileIds) recipientIds.add(id)
+        }
       }
-    }
-
-    // 三役/アプリ管理者 always see every task (0055_task_visibility.sql), so
-    // they're always in the notification set too.
-    const { data: yakuinRoles } = await supabase.from('club_roles').select('id').or('is_yakuin.eq.true,tier.eq.executive')
-    if (yakuinRoles && yakuinRoles.length > 0) {
-      const { data: yakuinProfiles } = await supabase
-        .from('profile_roles')
-        .select('profile_id')
-        .in(
-          'club_role_id',
-          yakuinRoles.map((r) => r.id)
-        )
-      for (const p of yakuinProfiles ?? []) recipientIds.add(p.profile_id)
     }
 
     if (actor_id) recipientIds.delete(actor_id)
