@@ -194,7 +194,8 @@ const EXECUTIVE_TOOLS = [
         invitee_name_queries: {
           type: 'array',
           items: { type: 'string' },
-          description: 'visibilityがinvite_onlyのとき、参加できるメンバーの名前（部分一致）のリスト',
+          description:
+            'visibilityがinvite_onlyのとき、参加できる人を指定するクエリのリスト。部員の名前（部分一致）だけでなく、role名（例: "備品", "渉外"）、"三役"（＝is_yakuin役職者全員、"役員"も同義）、属性の値（例: "60代"）も指定でき、自由に混在できる（例: ["三役", "渉外", "田中"]）。',
         },
       },
       required: ['title', 'start_at'],
@@ -265,11 +266,59 @@ const EXECUTIVE_TOOLS = [
   },
   {
     name: 'create_announcement',
-    description: 'お知らせを投稿する（アプリ管理者のみ実行可能）',
+    description:
+      'お知らせを投稿する（アプリ管理者のみ実行可能）。target_queriesを省略すると全部員に公開される。target_queriesを指定すると、そこに一致した部員だけに送られる（例: "60代にだけ送って"→["60代"]、「備品にだけ」→["備品"]、「三役と渉外とAさんに」→["三役","渉外","Aさん"]）。',
     input_schema: {
       type: 'object',
-      properties: { title: { type: 'string' }, body: { type: 'string' } },
+      properties: {
+        title: { type: 'string' },
+        body: { type: 'string' },
+        target_queries: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            '送り先を絞り込むクエリのリスト、任意。省略すると全部員に公開。role名（例: "備品", "渉外"）、"三役"（＝is_yakuin役職者全員、"役員"も同義）、属性の値（例: "60代"）、部員の名前（部分一致）を自由に混在できる。',
+        },
+        pinned: { type: 'boolean', description: '上部に固定表示するか、任意（デフォルトfalse）' },
+      },
       required: ['title', 'body'],
+    },
+  },
+  {
+    name: 'set_announcement_pinned',
+    description:
+      '既存のお知らせを上部固定表示にする・解除する（アプリ管理者のみ実行可能）。「〇〇を上部に固定して」のような依頼で使う。announcement_title_queryが複数のお知らせに一致した場合はambiguous:trueと候補一覧が返るので、実行せずにどのお知らせか本人に確認してから再度呼び出すこと。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        announcement_title_query: { type: 'string', description: 'お知らせのタイトル（部分一致で検索）' },
+        pinned: { type: 'boolean', description: 'true=固定表示にする、false=固定表示を解除する' },
+      },
+      required: ['announcement_title_query', 'pinned'],
+    },
+  },
+  {
+    name: 'create_tasks_bulk',
+    description:
+      '同じタスクを、条件に一致する複数の部員にまとめて割り当てる（アプリ管理者のみ実行可能）。「60代全員に部費のタスクを割り当てて」のような依頼で使う。単一の部員へのタスク割り当てにはcreate_taskを使うこと。締め切りは任意項目だが、ユーザーが締め切りに言及したのに具体的な日時（時刻含む）を言っていない場合は、due_atを0:00などで勝手に補完せず、先に本人に確認すること。締め切りの話が一切ない場合はdue_atを省略してよい。',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        target_queries: {
+          type: 'array',
+          items: { type: 'string' },
+          description:
+            'タスクを割り当てる相手を指定するクエリのリスト（必須）。role名（例: "備品", "渉外"）、"三役"（＝is_yakuin役職者全員、"役員"も同義）、属性の値（例: "60代"）、部員の名前（部分一致）を自由に混在できる。',
+        },
+        due_at: {
+          type: 'string',
+          description:
+            '締め切り日時、任意。"YYYY-MM-DD HH:mm"形式（例: "2026-08-10 23:59"）。ユーザーの依頼に締め切り時刻が含まれていない場合は、時刻を勝手に0:00などとして補完せず、本人に確認すること。',
+        },
+        priority: { type: 'string', enum: ['low', 'medium', 'high'] },
+      },
+      required: ['title', 'target_queries'],
     },
   },
   {
@@ -330,6 +379,79 @@ async function findMemberByName(query: string) {
   const { data } = await supabase.from('profiles').select('id, full_name')
   const normQuery = normalizeName(query)
   return (data ?? []).find((p) => normalizeName(p.full_name).includes(normQuery)) ?? null
+}
+
+// Shared targeting resolver used by create_announcement/set_announcement_pinned's
+// target_queries, create_event's invitee_name_queries, and create_tasks_bulk's
+// target_queries. Each query string is resolved independently and unioned
+// together (deduped by profile id): first "三役"/"役員" (any is_yakuin=true
+// role), then club_roles.label_ja (ilike), then member_attribute_values.value
+// (ilike), then falling back to the existing name-based findMemberByName. A
+// query that matches nothing under any of these contributes zero people
+// rather than failing the whole batch -- one bad term in a list shouldn't
+// block the rest.
+async function resolveMemberQueries(queries: string[]): Promise<{ id: string; full_name: string }[]> {
+  const byId = new Map<string, { id: string; full_name: string }>()
+
+  for (const raw of queries) {
+    const q = String(raw ?? '').trim()
+    if (!q) continue
+
+    if (q === '三役' || q === '役員') {
+      const { data: yakuinRoles } = await supabase.from('club_roles').select('id').eq('is_yakuin', true)
+      if (yakuinRoles && yakuinRoles.length > 0) {
+        const { data } = await supabase
+          .from('profile_roles')
+          .select('profile:profiles!profile_roles_profile_id_fkey(id, full_name)')
+          .in(
+            'club_role_id',
+            yakuinRoles.map((r) => r.id)
+          )
+        for (const row of data ?? []) {
+          const p = row.profile as unknown as { id: string; full_name: string } | null
+          if (p) byId.set(p.id, p)
+        }
+      }
+      continue
+    }
+
+    const { data: matchingRoles } = await supabase.from('club_roles').select('id').ilike('label_ja', `%${q}%`)
+    if (matchingRoles && matchingRoles.length > 0) {
+      const { data } = await supabase
+        .from('profile_roles')
+        .select('profile:profiles!profile_roles_profile_id_fkey(id, full_name)')
+        .in(
+          'club_role_id',
+          matchingRoles.map((r) => r.id)
+        )
+      for (const row of data ?? []) {
+        const p = row.profile as unknown as { id: string; full_name: string } | null
+        if (p) byId.set(p.id, p)
+      }
+      continue
+    }
+
+    const { data: matchingValues } = await supabase.from('member_attribute_values').select('id').ilike('value', `%${q}%`)
+    if (matchingValues && matchingValues.length > 0) {
+      const { data } = await supabase
+        .from('profile_attribute_values')
+        .select('profile:profiles!profile_attribute_values_profile_id_fkey(id, full_name)')
+        .in(
+          'attribute_value_id',
+          matchingValues.map((v) => v.id)
+        )
+      for (const row of data ?? []) {
+        const p = row.profile as unknown as { id: string; full_name: string } | null
+        if (p) byId.set(p.id, p)
+      }
+      continue
+    }
+
+    const member = await findMemberByName(q)
+    if (member) byId.set(member.id, member)
+  }
+
+  return [...byId.values()]
 }
 
 async function executeTool(name: string, input: Record<string, unknown>, ctx: { profileId: string; tier: string }) {
@@ -525,15 +647,11 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
     if (error) return { error: error.message }
 
     if (visibility === 'invite_only' && Array.isArray(input.invitee_name_queries)) {
-      const invitees: string[] = []
-      for (const q of input.invitee_name_queries as string[]) {
-        const member = await findMemberByName(q)
-        if (member) {
-          await supabase.from('event_invitees').insert({ event_id: event.id, profile_id: member.id })
-          invitees.push(member.full_name)
-        }
+      const members = await resolveMemberQueries(input.invitee_name_queries as string[])
+      if (members.length > 0) {
+        await supabase.from('event_invitees').insert(members.map((m) => ({ event_id: event.id, profile_id: m.id })))
       }
-      return { ok: true, title: event.title, visibility, invitees }
+      return { ok: true, title: event.title, visibility, invitees: members.map((m) => m.full_name) }
     }
     return { ok: true, title: event.title, visibility }
   }
@@ -643,9 +761,89 @@ async function executeTool(name: string, input: Record<string, unknown>, ctx: { 
 
   if (name === 'create_announcement') {
     if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
-    const { error } = await supabase.from('announcements').insert({ title: input.title, body: input.body, created_by: ctx.profileId })
+    const pinned = input.pinned === true
+    const hasTargets = Array.isArray(input.target_queries) && (input.target_queries as string[]).length > 0
+
+    let recipients: { id: string; full_name: string }[] = []
+    if (hasTargets) {
+      recipients = await resolveMemberQueries(input.target_queries as string[])
+      if (recipients.length === 0) {
+        return { error: '指定された条件（役職・属性・名前）に一致する部員が見つかりませんでした。送信していません。' }
+      }
+    }
+
+    const { data: announcement, error } = await supabase
+      .from('announcements')
+      .insert({
+        title: input.title,
+        body: input.body,
+        visibility: hasTargets ? 'targeted' : 'all',
+        pinned,
+        created_by: ctx.profileId,
+      })
+      .select('id, title')
+      .single()
     if (error) return { error: error.message }
-    return { ok: true }
+
+    if (hasTargets) {
+      const { error: recipientsError } = await supabase
+        .from('announcement_recipients')
+        .insert(recipients.map((m) => ({ announcement_id: announcement.id, profile_id: m.id })))
+      if (recipientsError) return { error: recipientsError.message }
+    }
+
+    return { ok: true, title: announcement.title, pinned, recipients: hasTargets ? recipients.map((m) => m.full_name) : undefined }
+  }
+
+  if (name === 'set_announcement_pinned') {
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+    const titleQuery = String(input.announcement_title_query ?? '').trim()
+    if (!titleQuery) return { error: 'announcement_title_queryが空です' }
+
+    const { data: matches, error: searchError } = await supabase
+      .from('announcements')
+      .select('id, title, pinned')
+      .ilike('title', `%${titleQuery}%`)
+      .order('created_at', { ascending: false })
+      .limit(8)
+    if (searchError) return { error: searchError.message }
+    if (!matches || matches.length === 0) return { error: '該当するお知らせが見つかりませんでした' }
+    if (matches.length > 1) {
+      return {
+        ambiguous: true,
+        candidates: matches.map((a) => ({ title: a.title, pinned: a.pinned })),
+        message: '複数のお知らせが該当しました。どのお知らせか本人に確認してから、絞り込んで再度実行してください。',
+      }
+    }
+
+    const announcement = matches[0]
+    const { error } = await supabase.from('announcements').update({ pinned: input.pinned === true }).eq('id', announcement.id)
+    if (error) return { error: error.message }
+    return { ok: true, title: announcement.title, pinned: input.pinned === true }
+  }
+
+  if (name === 'create_tasks_bulk') {
+    if (ctx.tier !== 'executive') return { error: '権限がありません（アプリ管理者のみ実行できます）' }
+    if (!Array.isArray(input.target_queries) || (input.target_queries as string[]).length === 0) {
+      return { error: 'target_queriesが空です' }
+    }
+
+    const assignees = await resolveMemberQueries(input.target_queries as string[])
+    if (assignees.length === 0) {
+      return { error: '指定された条件（役職・属性・名前）に一致する部員が見つかりませんでした。タスクは作成していません。' }
+    }
+
+    const dueAt = jstDateTimeToIso(input.due_at)
+    const rows = assignees.map((a) => ({
+      title: input.title,
+      assigned_to: a.id,
+      due_at: dueAt,
+      priority: input.priority || 'medium',
+      created_by: ctx.profileId,
+    }))
+    const { error } = await supabase.from('tasks').insert(rows)
+    if (error) return { error: error.message }
+    return { ok: true, assignees: assignees.map((a) => a.full_name), count: assignees.length }
   }
 
   if (name === 'remind_incomplete_task_holders') {
