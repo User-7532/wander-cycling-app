@@ -1,7 +1,25 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { AtSign, Bot, CalendarClock, Contact, Copy, Image, Images, Pencil, Plus, RotateCcw, Save, Trash2, Upload, UserRound, X } from 'lucide-react'
+import {
+  AtSign,
+  Bot,
+  CalendarClock,
+  Contact,
+  Copy,
+  Image,
+  Images,
+  Palette,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Save,
+  Trash2,
+  Type,
+  Upload,
+  UserRound,
+  X,
+} from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Button } from '@/components/ui/button'
@@ -9,6 +27,8 @@ import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { FONT_OPTIONS } from '@/lib/theme'
 
 const CALENDAR_FEED_BASE = 'https://vygnnwtxokbizejxtdyc.supabase.co/functions/v1/calendar-feed'
 
@@ -72,10 +92,16 @@ function CalendarFeedSection({ profile }) {
   )
 }
 
+const BACKGROUND_COLOR_PRESETS = [
+  { label: '白', value: '#ffffff' },
+  { label: '黒', value: '#000000' },
+]
+
 function BackgroundSection({ profile }) {
   const queryClient = useQueryClient()
   const [preview, setPreview] = useState(null)
   const [busy, setBusy] = useState(false)
+  const mode = profile?.background_mode ?? 'image'
 
   useEffect(() => {
     let cancelled = false
@@ -98,7 +124,7 @@ function BackgroundSection({ profile }) {
       const path = `${profile.id}/${file.name}`
       const { error: uploadError } = await supabase.storage.from('profile-backgrounds').upload(path, file, { upsert: true })
       if (uploadError) throw uploadError
-      const { error } = await supabase.from('profiles').update({ background_url: path }).eq('id', profile.id)
+      const { error } = await supabase.from('profiles').update({ background_url: path, background_mode: 'image' }).eq('id', profile.id)
       if (error) throw error
       return path
     },
@@ -113,7 +139,7 @@ function BackgroundSection({ profile }) {
   const reset = useMutation({
     mutationFn: async () => {
       const previousPath = profile.background_url
-      const { error } = await supabase.from('profiles').update({ background_url: null }).eq('id', profile.id)
+      const { error } = await supabase.from('profiles').update({ background_url: null, background_mode: 'image' }).eq('id', profile.id)
       if (error) throw error
       if (previousPath) await supabase.storage.from('profile-backgrounds').remove([previousPath])
     },
@@ -122,6 +148,24 @@ function BackgroundSection({ profile }) {
       queryClient.invalidateQueries({ queryKey: ['profile', profile.id] })
     },
     onError: (err) => toast.error(`リセットに失敗しました: ${err.message}`),
+  })
+
+  const setColorMode = useMutation({
+    mutationFn: async (color) => {
+      const { error } = await supabase.from('profiles').update({ background_mode: 'color', background_color: color }).eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profile', profile.id] }),
+    onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
+  })
+
+  const setImageMode = useMutation({
+    mutationFn: async () => {
+      const { error } = await supabase.from('profiles').update({ background_mode: 'image' }).eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profile', profile.id] }),
+    onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
   })
 
   function handleFile(e) {
@@ -136,34 +180,203 @@ function BackgroundSection({ profile }) {
     <Card className="p-5">
       <div className="mb-2 flex items-center gap-2">
         <Image className="h-5 w-5 text-primary" />
-        <h2 className="font-bold">背景画像</h2>
+        <h2 className="font-bold">背景</h2>
       </div>
       <p className="mb-4 text-sm text-muted-foreground">
-        自分だけの背景画像を設定できます。他のメンバーには表示されません。
+        自分だけの背景を、画像でも単色でも設定できます。他のメンバーには表示されません。
       </p>
 
-      {preview && (
-        <div
-          className="mb-4 h-32 w-full overflow-hidden rounded-xl border border-border/60 bg-cover bg-center"
-          style={{ backgroundImage: `url(${preview})` }}
-        />
+      <div className="mb-4 flex gap-2">
+        <Button type="button" size="sm" variant={mode === 'image' ? 'default' : 'outline'} onClick={() => setImageMode.mutate()}>
+          画像
+        </Button>
+        <Button type="button" size="sm" variant={mode === 'color' ? 'default' : 'outline'} onClick={() => setColorMode.mutate(profile?.background_color || '#ffffff')}>
+          単色
+        </Button>
+      </div>
+
+      {mode === 'image' ? (
+        <>
+          {preview && (
+            <div
+              className="mb-4 h-32 w-full overflow-hidden rounded-xl border border-border/60 bg-cover bg-center"
+              style={{ backgroundImage: `url(${preview})` }}
+            />
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <label
+              htmlFor="background-upload"
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-input px-3 py-2 text-sm font-medium hover:bg-muted/50"
+            >
+              <Upload className="h-4 w-4" />
+              {busy ? 'アップロード中...' : preview ? '画像を変更する' : '画像をアップロード'}
+            </label>
+            <input id="background-upload" type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={busy} />
+
+            {profile?.background_url && (
+              <Button type="button" variant="ghost" onClick={() => reset.mutate()} disabled={reset.isPending}>
+                <RotateCcw className="h-4 w-4" />
+                デフォルトに戻す
+              </Button>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="space-y-3">
+          <div
+            className="h-20 w-full rounded-xl border border-border/60"
+            style={{ backgroundColor: profile?.background_color || '#ffffff' }}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            {BACKGROUND_COLOR_PRESETS.map((c) => (
+              <Button key={c.value} type="button" size="sm" variant="outline" onClick={() => setColorMode.mutate(c.value)}>
+                {c.label}
+              </Button>
+            ))}
+            <input
+              type="color"
+              value={profile?.background_color || '#ffffff'}
+              onChange={(e) => setColorMode.mutate(e.target.value)}
+              className="h-9 w-14 cursor-pointer rounded-md border border-input"
+              aria-label="背景色を選ぶ"
+            />
+          </div>
+        </div>
       )}
+    </Card>
+  )
+}
 
-      <div className="flex flex-wrap items-center gap-2">
-        <label
-          htmlFor="background-upload"
-          className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-input px-3 py-2 text-sm font-medium hover:bg-muted/50"
-        >
-          <Upload className="h-4 w-4" />
-          {busy ? 'アップロード中...' : preview ? '画像を変更する' : '画像をアップロード'}
-        </label>
-        <input id="background-upload" type="file" accept="image/*" className="hidden" onChange={handleFile} disabled={busy} />
+function ThemeSection({ profile }) {
+  const queryClient = useQueryClient()
+  const [accentColor, setAccentColor] = useState(profile?.theme_accent_color || '#1a9d63')
 
-        {profile?.background_url && (
-          <Button type="button" variant="ghost" onClick={() => reset.mutate()} disabled={reset.isPending}>
-            <RotateCcw className="h-4 w-4" />
-            デフォルトに戻す
-          </Button>
+  useEffect(() => {
+    setAccentColor(profile?.theme_accent_color || '#1a9d63')
+  }, [profile?.theme_accent_color])
+
+  const save = useMutation({
+    mutationFn: async (patch) => {
+      const { error } = await supabase.from('profiles').update(patch).eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profile', profile.id] }),
+    onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
+  })
+
+  return (
+    <Card className="p-5">
+      <div className="mb-2 flex items-center gap-2">
+        <Palette className="h-5 w-5 text-primary" />
+        <h2 className="font-bold">テーマ</h2>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">画面の明るさとボタンの色を、自分好みに変更できます。</p>
+      <div className="space-y-4">
+        <div className="space-y-1.5">
+          <Label>画面の明るさ</Label>
+          <Select value={profile?.theme_mode ?? 'light'} onValueChange={(v) => save.mutate({ theme_mode: v })}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="light">ライト</SelectItem>
+              <SelectItem value="dark">ダーク</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor="accent-color">ボタンの色</Label>
+          <div className="flex items-center gap-2">
+            <input
+              id="accent-color"
+              type="color"
+              value={accentColor}
+              onChange={(e) => setAccentColor(e.target.value)}
+              onBlur={() => save.mutate({ theme_accent_color: accentColor })}
+              className="h-10 w-14 cursor-pointer rounded-md border border-input"
+            />
+            {profile?.theme_accent_color && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => save.mutate({ theme_accent_color: null })}>
+                <RotateCcw className="h-4 w-4" />
+                既定の色に戻す
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+    </Card>
+  )
+}
+
+function FontSection({ profile }) {
+  const queryClient = useQueryClient()
+  const [busy, setBusy] = useState(false)
+  const fontChoice = profile?.font_choice ?? 'default'
+
+  const save = useMutation({
+    mutationFn: async (font_choice) => {
+      const { error } = await supabase.from('profiles').update({ font_choice }).eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['profile', profile.id] }),
+    onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
+  })
+
+  const uploadFont = useMutation({
+    mutationFn: async (file) => {
+      const path = `${profile.id}/${file.name}`
+      const { error: uploadError } = await supabase.storage.from('profile-fonts').upload(path, file, { upsert: true })
+      if (uploadError) throw uploadError
+      const { error } = await supabase.from('profiles').update({ font_choice: 'custom', custom_font_url: path }).eq('id', profile.id)
+      if (error) throw error
+    },
+    onSuccess: () => {
+      toast.success('フォントをアップロードしました')
+      queryClient.invalidateQueries({ queryKey: ['profile', profile.id] })
+    },
+    onError: (err) => toast.error(`アップロードに失敗しました: ${err.message}`),
+    onSettled: () => setBusy(false),
+  })
+
+  function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setBusy(true)
+    uploadFont.mutate(file)
+  }
+
+  return (
+    <Card className="p-5">
+      <div className="mb-2 flex items-center gap-2">
+        <Type className="h-5 w-5 text-primary" />
+        <h2 className="font-bold">フォント</h2>
+      </div>
+      <p className="mb-4 text-sm text-muted-foreground">アプリ全体の文字のフォントを変更できます。</p>
+      <div className="space-y-3">
+        <Select value={fontChoice} onValueChange={(v) => save.mutate(v)}>
+          <SelectTrigger>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {FONT_OPTIONS.map((f) => (
+              <SelectItem key={f.key} value={f.key}>
+                {f.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {fontChoice === 'custom' && (
+          <div className="flex flex-wrap items-center gap-2">
+            <label
+              htmlFor="font-upload"
+              className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-input px-3 py-2 text-sm font-medium hover:bg-muted/50"
+            >
+              <Upload className="h-4 w-4" />
+              {busy ? 'アップロード中...' : profile?.custom_font_url ? 'フォントファイルを変更する' : 'フォントファイルをアップロード'}
+            </label>
+            <input id="font-upload" type="file" accept=".ttf,.otf,.woff,.woff2" className="hidden" onChange={handleFile} disabled={busy} />
+          </div>
         )}
       </div>
     </Card>
@@ -571,6 +784,12 @@ export default function Settings() {
           <CalendarFeedSection profile={profile} />
         </div>
         <div className="mb-6">
+          <ThemeSection profile={profile} />
+        </div>
+        <div className="mb-6">
+          <FontSection profile={profile} />
+        </div>
+        <div className="mb-6">
           <BackgroundSection profile={profile} />
         </div>
         <div className="mb-6">
@@ -593,6 +812,14 @@ export default function Settings() {
 
       <div className="mb-6">
         <CalendarFeedSection profile={profile} />
+      </div>
+
+      <div className="mb-6">
+        <ThemeSection profile={profile} />
+      </div>
+
+      <div className="mb-6">
+        <FontSection profile={profile} />
       </div>
 
       <div className="mb-6">

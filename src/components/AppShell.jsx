@@ -20,6 +20,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import NameConfirmDialog from '@/components/NameConfirmDialog'
 import { cn } from '@/lib/utils'
+import { applyTheme, applyFont } from '@/lib/theme'
 
 const MOBILE_NAV_ITEMS = [
   { to: '/', label: 'ホーム', icon: Bike, end: true },
@@ -90,6 +91,31 @@ export default function AppShell({ user }) {
     }
   }, [profile?.background_url])
 
+  // Personal theme (設定 > テーマ): light/dark palette + button/accent color
+  // applied as CSS variable overrides on :root, independent of the
+  // background image/color below.
+  useEffect(() => {
+    applyTheme({ mode: profile?.theme_mode ?? 'light', accentColorHex: profile?.theme_accent_color ?? null })
+  }, [profile?.theme_mode, profile?.theme_accent_color])
+
+  // Personal font (設定 > フォント): a curated Google Font, or a self-uploaded
+  // font file resolved to a signed URL the same way the background image is.
+  useEffect(() => {
+    let cancelled = false
+    async function loadFont() {
+      if (profile?.font_choice === 'custom' && profile?.custom_font_url) {
+        const { data, error } = await supabase.storage.from('profile-fonts').createSignedUrl(profile.custom_font_url, 60 * 60)
+        if (!cancelled && !error) applyFont('custom', data.signedUrl)
+        return
+      }
+      if (!cancelled) applyFont(profile?.font_choice ?? 'default', null)
+    }
+    loadFont()
+    return () => {
+      cancelled = true
+    }
+  }, [profile?.font_choice, profile?.custom_font_url])
+
   async function handleLogout() {
     await supabase.auth.signOut()
   }
@@ -104,21 +130,32 @@ export default function AppShell({ user }) {
   // scrim so cards (which stay fully opaque via bg-card) remain the
   // primary readable surface and any text sitting directly on the shell
   // keeps enough contrast.
+  // 背景 (background image/color) is independent of テーマ above -- a flat
+  // color (white/black/anything, via 設定 > 背景) instead of an image when
+  // background_mode = 'color'.
   const effectiveBackgroundUrl = backgroundUrl || '/default-background.jpg'
-  const backgroundStyle = {
-    backgroundImage: `linear-gradient(hsl(var(--background) / 0.75), hsl(var(--background) / 0.75)), url(${effectiveBackgroundUrl})`,
-    backgroundSize: 'cover',
-    backgroundPosition: 'center',
-    backgroundRepeat: 'no-repeat',
-    // Force this layer onto its own GPU compositing layer -- without
-    // this, `position: fixed` visibly lags/jumps for a frame during
-    // fast swipes and rubber-band overscroll on iOS Safari, since the
-    // browser otherwise has to repaint it relative to page content on
-    // every scroll frame instead of compositing it independently.
-    transform: 'translateZ(0)',
-    WebkitTransform: 'translateZ(0)',
-    willChange: 'transform',
-  }
+  const isFlatColorBackground = profile?.background_mode === 'color' && !!profile?.background_color
+  const backgroundStyle = isFlatColorBackground
+    ? {
+        backgroundColor: profile.background_color,
+        transform: 'translateZ(0)',
+        WebkitTransform: 'translateZ(0)',
+        willChange: 'transform',
+      }
+    : {
+        backgroundImage: `linear-gradient(hsl(var(--background) / 0.75), hsl(var(--background) / 0.75)), url(${effectiveBackgroundUrl})`,
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        backgroundRepeat: 'no-repeat',
+        // Force this layer onto its own GPU compositing layer -- without
+        // this, `position: fixed` visibly lags/jumps for a frame during
+        // fast swipes and rubber-band overscroll on iOS Safari, since the
+        // browser otherwise has to repaint it relative to page content on
+        // every scroll frame instead of compositing it independently.
+        transform: 'translateZ(0)',
+        WebkitTransform: 'translateZ(0)',
+        willChange: 'transform',
+      }
 
   return (
     <>
