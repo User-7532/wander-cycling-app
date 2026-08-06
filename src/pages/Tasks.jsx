@@ -13,7 +13,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogDescription, DialogFooter, DialogClose } from '@/components/ui/dialog'
 import { cn } from '@/lib/utils'
 
 const STATUS_LABEL = { todo: '未着手', in_progress: '進行中', done: '完了' }
@@ -75,6 +75,9 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [visFilters, setVisFilters] = useState([{ ...EMPTY_FILTER }])
   const [visFilterRoleId, setVisFilterRoleId] = useState('')
   const [visibleToIds, setVisibleToIds] = useState([])
+  // Collapsed by default -- rarely needed, and the filter/role/checklist UI
+  // inside makes the dialog very tall if always expanded.
+  const [visSectionOpen, setVisSectionOpen] = useState(false)
   // selectedIds is the actual bulk-create target group. It is NOT derived
   // live from the filter condition below -- the filter condition is a
   // preview of who an "適用" click would affect. Clicking apply flips
@@ -575,100 +578,114 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           </div>
           {form.visibility === 'restricted' && (
             <div className="space-y-3 rounded-lg border p-3">
-              <Label>その他、閲覧できる人を追加（任意）</Label>
-              {visFilters.map((f, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <Select value={f.attributeId} onValueChange={(v) => updateVisFilter(idx, { attributeId: v, valueId: '' })}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="属性" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {attributes?.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Select value={f.valueId} onValueChange={(v) => updateVisFilter(idx, { valueId: v })} disabled={!f.attributeId}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="値" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {attributeValues
-                        ?.filter((v) => v.attribute_id === f.attributeId)
-                        .map((v) => (
-                          <SelectItem key={v.id} value={v.id}>
-                            {v.value}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                  {visFilters.length > 1 && (
-                    <button type="button" onClick={() => removeVisFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
-                </div>
-              ))}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={addVisFilter}>
-                  条件を追加（AND）
-                </Button>
-                <Button type="button" size="sm" variant="secondary" disabled={!visMatchedProfiles?.length} onClick={applyVisFilterToggle}>
-                  この条件で選択を切替
-                </Button>
-              </div>
+              <button
+                type="button"
+                onClick={() => setVisSectionOpen((v) => !v)}
+                className="flex items-center gap-1.5 text-sm font-medium text-muted-foreground hover:text-foreground"
+              >
+                <ChevronDown className={`h-4 w-4 transition-transform ${visSectionOpen ? 'rotate-180' : ''}`} />
+                その他、閲覧できる人を追加（任意）
+              </button>
               <p className="text-xs text-muted-foreground">
-                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                担当者以外の人が気づかず同じ作業を始めてしまわないよう、事前に知らせておきたい人がいる場合に追加してください。
               </p>
-              {visMatchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
-              {!visMatchingLoading && validVisFilters.length > 0 && visMatchedProfiles?.length === 0 && (
-                <p className="text-xs text-muted-foreground">該当する部員がいません</p>
-              )}
-
-              <div className="space-y-2 border-t pt-3">
-                <Label>役職で絞り込む</Label>
-                <div className="flex items-center gap-2">
-                  <Select value={visFilterRoleId} onValueChange={setVisFilterRoleId}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="役職" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {clubRoles?.map((r) => (
-                        <SelectItem key={r.id} value={String(r.id)}>
-                          {r.label_ja}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <Button type="button" size="sm" variant="secondary" disabled={!visFilterRoleId} onClick={applyVisRoleFilter}>
-                    この条件で選択を切替
-                  </Button>
-                </div>
-              </div>
-
-              <div className="space-y-1.5 pt-2">
-                <div className="flex items-center justify-between">
-                  <Label>対象者（{visibleToIds.length}人選択中）</Label>
-                  <div className="flex gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={selectAllVisibleTo}>
-                      全員選択
+              {visSectionOpen && (
+                <>
+                  {visFilters.map((f, idx) => (
+                    <div key={idx} className="flex items-center gap-2">
+                      <Select value={f.attributeId} onValueChange={(v) => updateVisFilter(idx, { attributeId: v, valueId: '' })}>
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="属性" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {attributes?.map((a) => (
+                            <SelectItem key={a.id} value={a.id}>
+                              {a.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={f.valueId} onValueChange={(v) => updateVisFilter(idx, { valueId: v })} disabled={!f.attributeId}>
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="値" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {attributeValues
+                            ?.filter((v) => v.attribute_id === f.attributeId)
+                            .map((v) => (
+                              <SelectItem key={v.id} value={v.id}>
+                                {v.value}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                      {visFilters.length > 1 && (
+                        <button type="button" onClick={() => removeVisFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={addVisFilter}>
+                      条件を追加（AND）
                     </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={deselectAllVisibleTo}>
-                      全員解除
+                    <Button type="button" size="sm" variant="secondary" disabled={!visMatchedProfiles?.length} onClick={applyVisFilterToggle}>
+                      この条件で選択を切替
                     </Button>
                   </div>
-                </div>
-                <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
-                  {members?.map((m) => (
-                    <label key={m.id} className="flex items-center gap-2 text-sm">
-                      <input type="checkbox" checked={visibleToIds.includes(m.id)} onChange={() => toggleVisibleTo(m.id)} />
-                      {m.full_name}
-                    </label>
-                  ))}
-                </div>
-              </div>
+                  <p className="text-xs text-muted-foreground">
+                    条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                  </p>
+                  {visMatchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
+                  {!visMatchingLoading && validVisFilters.length > 0 && visMatchedProfiles?.length === 0 && (
+                    <p className="text-xs text-muted-foreground">該当する部員がいません</p>
+                  )}
+
+                  <div className="space-y-2 border-t pt-3">
+                    <Label>役職で絞り込む</Label>
+                    <div className="flex items-center gap-2">
+                      <Select value={visFilterRoleId} onValueChange={setVisFilterRoleId}>
+                        <SelectTrigger className="flex-1">
+                          <SelectValue placeholder="役職" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {clubRoles?.map((r) => (
+                            <SelectItem key={r.id} value={String(r.id)}>
+                              {r.label_ja}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button type="button" size="sm" variant="secondary" disabled={!visFilterRoleId} onClick={applyVisRoleFilter}>
+                        この条件で選択を切替
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 pt-2">
+                    <div className="flex items-center justify-between">
+                      <Label>対象者（{visibleToIds.length}人選択中）</Label>
+                      <div className="flex gap-2">
+                        <Button type="button" size="sm" variant="outline" onClick={selectAllVisibleTo}>
+                          全員選択
+                        </Button>
+                        <Button type="button" size="sm" variant="outline" onClick={deselectAllVisibleTo}>
+                          全員解除
+                        </Button>
+                      </div>
+                    </div>
+                    <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+                      {members?.map((m) => (
+                        <label key={m.id} className="flex items-center gap-2 text-sm">
+                          <input type="checkbox" checked={visibleToIds.includes(m.id)} onChange={() => toggleVisibleTo(m.id)} />
+                          {m.full_name}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                </>
+              )}
             </div>
           )}
           {mode === 'create' && bulkMode && selectedProfiles.length > 1 && (
@@ -738,6 +755,11 @@ export default function Tasks() {
   const [viewFilterValueId, setViewFilterValueId] = useState('')
   const [viewFilterRoleId, setViewFilterRoleId] = useState('')
   const canFilterView = isExecutive || isYakuin
+  // Single shared confirm-before-status-change dialog (not one per task
+  // card). Status changes now fire a club-wide LINE notification to
+  // everyone who can see the task (DB trigger + Edge Function), so a
+  // careless click on 未着手/進行中/完了 should not go straight through.
+  const [confirmingStatus, setConfirmingStatus] = useState(null)
 
   const { data: tasks, isLoading } = useQuery({
     queryKey: ['tasks'],
@@ -1032,7 +1054,7 @@ export default function Tasks() {
                       type="button"
                       size="sm"
                       variant={t.status === s ? 'default' : 'outline'}
-                      onClick={() => updateStatus.mutate({ id: t.id, status: s })}
+                      onClick={() => setConfirmingStatus({ taskId: t.id, taskTitle: t.title, newStatus: s })}
                     >
                       {STATUS_LABEL[s]}
                     </Button>
@@ -1046,6 +1068,33 @@ export default function Tasks() {
       </div>
 
       {editing && <TaskFormDialog mode="edit" task={editing} members={members} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />}
+
+      <Dialog open={!!confirmingStatus} onOpenChange={(v) => !v && setConfirmingStatus(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>本当に{STATUS_LABEL[confirmingStatus?.newStatus]}にしますか？</DialogTitle>
+            <DialogDescription>
+              {STATUS_LABEL[confirmingStatus?.newStatus]}に変更すると、このタスクを見られる人全員にLINEで通知が送信されます。
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <DialogClose asChild>
+              <Button variant="outline">キャンセル</Button>
+            </DialogClose>
+            <Button
+              disabled={updateStatus.isPending}
+              onClick={() => {
+                updateStatus.mutate(
+                  { id: confirmingStatus.taskId, status: confirmingStatus.newStatus },
+                  { onSuccess: () => setConfirmingStatus(null) }
+                )
+              }}
+            >
+              {STATUS_LABEL[confirmingStatus?.newStatus]}にする
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <details className="group mt-8 rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
         <summary className="flex cursor-pointer list-none items-center justify-between font-medium text-foreground">
