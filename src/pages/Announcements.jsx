@@ -453,9 +453,9 @@ export default function Announcements() {
         {announcements?.map((a, i) => (
           <motion.div key={a.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
             <Card className="p-5">
-              <div className="mb-1.5 flex items-start justify-between gap-2">
+              <div className="mb-1.5 flex flex-wrap items-start justify-between gap-2">
                 <div className="flex items-center gap-1.5">
-                  {a.pinned && <Pin className="h-3.5 w-3.5 text-primary" />}
+                  {a.pinned && <Pin className="h-3.5 w-3.5 shrink-0 text-primary" />}
                   <h3 className="font-bold">{a.title}</h3>
                 </div>
                 <div className="flex items-center gap-1.5">

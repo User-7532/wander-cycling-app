@@ -1016,7 +1016,7 @@ export default function Tasks() {
           return (
           <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
             <Card className={cn('p-5', t.status === 'done' && 'opacity-60')}>
-              <div className="mb-1.5 flex items-start justify-between gap-2">
+              <div className="mb-1.5 flex flex-wrap items-start justify-between gap-2">
                 <h3 className={cn('font-bold', t.status === 'done' && 'line-through')}>{t.title}</h3>
                 <div className="flex items-center gap-1.5">
                   {isExecutive && t.visibility === 'all' && (

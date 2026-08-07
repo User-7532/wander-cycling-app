@@ -207,9 +207,9 @@ export default function Home() {
             <div className="space-y-2">
               {announcements?.rows?.map((a) => (
                 <Card key={a.id} className={a.pinned ? 'border-accent/50 bg-accent/5 p-4' : 'p-4'}>
-                  <div className="mb-1 flex items-center gap-2">
+                  <div className="mb-1 flex flex-wrap items-center gap-2">
                     {a.pinned && (
-                      <Badge variant="outline" className="border-accent text-accent-foreground">
+                      <Badge variant="outline" className="shrink-0 border-accent text-accent-foreground">
                         固定
                       </Badge>
                     )}

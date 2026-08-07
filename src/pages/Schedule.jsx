@@ -1002,7 +1002,7 @@ export default function Schedule() {
                     <span className="text-2xl font-black leading-none">{day}</span>
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="mb-1 flex items-start justify-between gap-2">
+                    <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
                       <h3 className="font-bold">{e.title}</h3>
                       <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
                         {!e.end_at && (
