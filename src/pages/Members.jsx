@@ -340,8 +340,8 @@ function PublicProfileSection({ member }) {
           {links.map((link) => (
             <p key={link.id} className="flex items-center gap-1 text-foreground/90">
               <AtSign className="h-3 w-3 shrink-0 text-muted-foreground" />
-              <span className="font-medium">{link.platform}:</span>
-              <span className="truncate">{link.value}</span>
+              <span className="shrink-0 font-medium">{link.platform}:</span>
+              <span className="min-w-0 flex-1 truncate">{link.value}</span>
             </p>
           ))}
         </div>
@@ -680,12 +680,12 @@ export default function Members() {
             <motion.div key={m.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: Math.min(i, 8) * 0.02 }}>
               <Card className="p-5">
                 <div className="mb-3 flex flex-wrap items-start justify-between">
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
                     <Avatar>
                       <AvatarImage src={m.avatar_url} alt={m.full_name} />
                       <AvatarFallback>{m.full_name?.[0]}</AvatarFallback>
                     </Avatar>
-                    <div>
+                    <div className="min-w-0">
                       <p className="font-bold">{m.full_name}</p>
                       {isYakuin && m.email && <p className="truncate text-xs text-muted-foreground">{m.email}</p>}
                     </div>
