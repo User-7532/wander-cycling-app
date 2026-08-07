@@ -33,10 +33,14 @@ async function getNonObLineUserIds(): Promise<string[]> {
 // honored, not silently filtered. Still excludes anyone with no linked LINE
 // account, since there's no way to reach them regardless.
 async function getTargetedLineUserIds(announcementId: string): Promise<string[]> {
-  const { data: recipients } = await supabase.from('announcement_recipients').select('profile_id').eq('announcement_id', announcementId)
-  if (!recipients || recipients.length === 0) return []
+  // resolve_announcement_recipients expands both plain profile_id rows and
+  // attribute/role-target rows into the current concrete profile set
+  // (0064_dynamic_group_targets.sql) -- someone who gains a targeted
+  // attribute/role after this announcement was posted is included without
+  // needing announcement_recipients itself to change.
+  const { data: profileIds } = await supabase.rpc('resolve_announcement_recipients', { p_announcement_id: announcementId })
+  if (!profileIds || profileIds.length === 0) return []
 
-  const profileIds = recipients.map((r) => r.profile_id)
   const { data: identities } = await supabase.from('line_identities').select('profile_id, line_user_id').in('profile_id', profileIds)
   if (!identities || identities.length === 0) return []
 

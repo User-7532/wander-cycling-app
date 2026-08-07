@@ -107,8 +107,13 @@ serve(async (req) => {
       return new Response(JSON.stringify({ notified: 'multicast', recipients: to.length }))
     }
 
-    const { data: invitees } = await supabase.from('event_invitees').select('profile_id').eq('event_id', event.id)
-    const profileIds = [...new Set((invitees ?? []).map((i) => i.profile_id))]
+    // resolve_event_invitees expands both plain profile_id rows and
+    // attribute/role-target rows into the current concrete profile set
+    // (0064_dynamic_group_targets.sql) -- someone who gains a targeted
+    // attribute/role after this event was created is included without
+    // needing event_invitees itself to change.
+    const { data: resolvedIds } = await supabase.rpc('resolve_event_invitees', { p_event_id: event.id })
+    const profileIds = [...new Set(resolvedIds ?? [])]
     if (profileIds.length === 0) {
       return new Response(JSON.stringify({ notified: false, reason: 'no invitees' }))
     }

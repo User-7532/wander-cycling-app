@@ -82,8 +82,13 @@ serve(async (req) => {
         const { data: everyone } = await supabase.from('profiles').select('id').is('left_at', null)
         for (const p of everyone ?? []) recipientIds.add(p.id)
       } else {
-        const { data: visibleTo } = await supabase.from('task_visible_to').select('profile_id').eq('task_id', t.id)
-        for (const v of visibleTo ?? []) recipientIds.add(v.profile_id)
+        // resolve_task_visible_to expands both plain profile_id rows and
+        // attribute/role-target rows into the current concrete profile set
+        // (0064_dynamic_group_targets.sql) -- so someone who gains a
+        // targeted attribute/role after this task was created is included
+        // without needing task_visible_to itself to change.
+        const { data: visibleTo } = await supabase.rpc('resolve_task_visible_to', { p_task_id: t.id })
+        for (const profileId of visibleTo ?? []) recipientIds.add(profileId)
         if (t.visibility === 'restricted') {
           for (const id of yakuinProfileIds) recipientIds.add(id)
         }
