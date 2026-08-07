@@ -138,7 +138,7 @@ export default function Home() {
         <StatTile icon={Megaphone} value={announcements?.count} label="お知らせ" to="/announcements" />
       </div>
 
-      <div className="grid gap-6 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-lg font-bold">今後のスケジュール</h2>
