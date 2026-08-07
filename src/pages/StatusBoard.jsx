@@ -225,7 +225,7 @@ export default function StatusBoard() {
               transition={{ duration: 0.2 }}
             >
               <Card className="p-4">
-                <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <span className="font-medium text-foreground">{p.author?.full_name || '部員'}</span>
                     <span>{timeAgo(p.created_at)}</span>

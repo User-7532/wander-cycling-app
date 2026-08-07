@@ -406,7 +406,7 @@ function DepartedMembersSection() {
           {isLoading && <p className="text-xs text-muted-foreground">読み込み中...</p>}
           {!isLoading && (departed ?? []).length === 0 && <p className="text-xs text-muted-foreground">退部したメンバーはいません</p>}
           {(departed ?? []).map((m) => (
-            <div key={m.id} className="flex items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm">
+            <div key={m.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border/60 px-3 py-2 text-sm">
               <div>
                 <p className="font-medium">{m.full_name}</p>
                 <p className="text-xs text-muted-foreground">{new Date(m.left_at).toLocaleString('ja-JP')} に退部</p>
@@ -679,7 +679,7 @@ export default function Members() {
           return (
             <motion.div key={m.id} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2, delay: Math.min(i, 8) * 0.02 }}>
               <Card className="p-5">
-                <div className="mb-3 flex items-start justify-between">
+                <div className="mb-3 flex flex-wrap items-start justify-between">
                   <div className="flex items-center gap-3">
                     <Avatar>
                       <AvatarImage src={m.avatar_url} alt={m.full_name} />

@@ -171,7 +171,7 @@ export default function Emergency() {
       <div className="space-y-3">
         {items?.map((item) => (
           <div key={item.id} className={cn('rounded-2xl border-2 p-5', PRIORITY_STYLE[item.priority] || PRIORITY_STYLE.low)}>
-            <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <h3 className="font-bold">{item.title}</h3>
               <div className="flex items-center gap-2">
                 <span className="rounded-full bg-background/70 px-2 py-0.5 text-[11px] font-medium text-muted-foreground">

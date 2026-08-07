@@ -277,7 +277,7 @@ function MembershipFeesAdmin() {
         {members?.map((m) => {
           const fee = feesByProfile.get(m.id)
           return (
-            <Card key={m.id} className="flex items-center justify-between px-4 py-3">
+            <Card key={m.id} className="flex flex-wrap items-center justify-between px-4 py-3">
               <div>
                 <p className="text-sm font-bold">{m.full_name}</p>
                 {fee ? (
@@ -482,7 +482,7 @@ function MyReimbursements({ userId }) {
       <div className="space-y-2">
         {requests?.map((r) => (
           <Card key={r.id} className="px-4 py-3">
-            <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-bold">{r.description}</p>
               <Badge variant={REIMBURSEMENT_STATUS_VARIANT[r.status]}>{REIMBURSEMENT_STATUS_LABEL[r.status]}</Badge>
             </div>
@@ -549,7 +549,7 @@ function ReimbursementAdmin({ userId }) {
       <div className="space-y-2">
         {requests?.map((r) => (
           <Card key={r.id} className="px-4 py-3">
-            <div className="mb-1 flex items-center justify-between gap-2">
+            <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
               <p className="text-sm font-bold">
                 {r.submitter?.full_name} ・ {r.description}
               </p>

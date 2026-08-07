@@ -211,7 +211,7 @@ export default function AccountDirectory() {
 
           return (
             <Card key={e.id} className="p-4">
-              <div className="mb-1 flex items-start justify-between gap-2">
+              <div className="mb-1 flex flex-wrap items-start justify-between gap-2">
                 <div>
                   <p className="font-bold">{e.service_name}</p>
                   {e.login_id && <p className="text-xs text-muted-foreground">{e.login_id}</p>}

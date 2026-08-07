@@ -149,7 +149,7 @@ export default function Resources() {
             </div>
             <Card className="divide-y overflow-hidden p-0">
               {items.map((l) => (
-                <div key={l.id} className="flex items-center gap-3 px-4 py-3">
+                <div key={l.id} className="flex flex-wrap items-center gap-3 px-4 py-3">
                   <a href={l.url} target="_blank" rel="noopener noreferrer" className="flex flex-1 items-center gap-2 text-sm font-medium hover:text-primary">
                     <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                     {l.label}

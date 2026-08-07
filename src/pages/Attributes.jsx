@@ -273,7 +273,7 @@ function AttributeCard({ attribute, userId, isExecutive, onEdit }) {
 
   return (
     <Card className="p-5">
-      <div className="mb-3 flex items-start justify-between gap-2">
+      <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
         <div className="flex items-center gap-2">
           <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: attribute.color }} />
           <div>
@@ -438,7 +438,7 @@ function ClubRoleRow({ role, isExecutive, onEdit }) {
   const color = TIER_COLOR[role.tier] ?? '#64748b'
 
   return (
-    <div className="flex items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5">
+    <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 px-3 py-2.5">
       <div className="flex items-center gap-2.5">
         <span className="h-3 w-3 shrink-0 rounded-full" style={{ backgroundColor: color }} />
         <div>
