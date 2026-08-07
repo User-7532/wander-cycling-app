@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, useOutletContext } from 'react-router-dom'
-import { CalendarClock, ChevronDown, ListTodo, Pencil, Plus, Trash2 } from 'lucide-react'
+import { CalendarClock, ChevronDown, ListTodo, Pencil, Plus, RefreshCw, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -79,6 +79,12 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [visFilters, setVisFilters] = useState([{ ...EMPTY_FILTER }])
   const [visFilterRoleId, setVisFilterRoleId] = useState('')
   const [visibleToIds, setVisibleToIds] = useState([])
+  // "Standing" targets: instead of resolving the filter to today's matching
+  // profiles, remember the attribute value / role itself so membership stays
+  // live (see 0064_dynamic_group_targets.sql). Parallel to visibleToIds, not
+  // a replacement -- both kinds of rows go into task_visible_to.
+  const [standingAttributeValueIds, setStandingAttributeValueIds] = useState([])
+  const [standingRoleIds, setStandingRoleIds] = useState([])
   // Collapsed by default -- rarely needed, and the filter/role/checklist UI
   // inside makes the dialog very tall if always expanded.
   const [visSectionOpen, setVisSectionOpen] = useState(false)
@@ -96,15 +102,18 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const { data: existingVisibleTo } = useQuery({
     queryKey: ['task_visible_to', task?.id],
     queryFn: async () => {
-      const { data, error } = await supabase.from('task_visible_to').select('profile_id').eq('task_id', task.id)
+      const { data, error } = await supabase.from('task_visible_to').select('profile_id, attribute_value_id, club_role_id').eq('task_id', task.id)
       if (error) throw error
-      return data.map((r) => r.profile_id)
+      return data
     },
     enabled: mode === 'edit' && open && task.visibility !== 'all',
   })
 
   useEffect(() => {
-    if (existingVisibleTo) setVisibleToIds(existingVisibleTo)
+    if (!existingVisibleTo) return
+    setVisibleToIds(existingVisibleTo.filter((r) => r.profile_id).map((r) => r.profile_id))
+    setStandingAttributeValueIds(existingVisibleTo.filter((r) => r.attribute_value_id).map((r) => r.attribute_value_id))
+    setStandingRoleIds(existingVisibleTo.filter((r) => r.club_role_id).map((r) => r.club_role_id))
   }, [existingVisibleTo])
 
   const save = useMutation({
@@ -127,9 +136,16 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         if (error) throw error
       }
 
-      if (form.visibility !== 'all' && visibleToIds.length > 0) {
-        const { error: visError } = await supabase.from('task_visible_to').insert(visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })))
-        if (visError) throw visError
+      if (form.visibility !== 'all') {
+        const visRows = [
+          ...visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })),
+          ...standingAttributeValueIds.map((attribute_value_id) => ({ task_id: taskId, attribute_value_id })),
+          ...standingRoleIds.map((club_role_id) => ({ task_id: taskId, club_role_id })),
+        ]
+        if (visRows.length > 0) {
+          const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
+          if (visError) throw visError
+        }
       }
     },
     onSuccess: () => {
@@ -141,6 +157,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         setVisFilters([{ ...EMPTY_FILTER }])
         setVisFilterRoleId('')
         setVisibleToIds([])
+        setStandingAttributeValueIds([])
+        setStandingRoleIds([])
       }
       onOpenChange(false)
     },
@@ -326,6 +344,18 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   function toggleVisibleTo(id) {
     setVisibleToIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
+  // Adds/removes an attribute value or role itself as a standing target,
+  // reusing the same valueId/visFilterRoleId selection as the flip-toggle
+  // buttons -- no profile resolution, just remembering the id.
+  function toggleStandingAttributeValue(valueId) {
+    if (!valueId) return
+    setStandingAttributeValueIds((prev) => (prev.includes(valueId) ? prev.filter((x) => x !== valueId) : [...prev, valueId]))
+  }
+  function toggleStandingRole() {
+    if (!visFilterRoleId) return
+    const roleId = Number(visFilterRoleId)
+    setStandingRoleIds((prev) => (prev.includes(roleId) ? prev.filter((x) => x !== roleId) : [...prev, roleId]))
+  }
   function applyVisFilterToggle() {
     const ids = (visMatchedProfiles ?? []).map((p) => p.id)
     if (ids.length === 0) return
@@ -391,10 +421,16 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       const { error } = await supabase.from('tasks').insert(rows)
       if (error) throw error
 
-      if (form.visibility !== 'all' && visibleToIds.length > 0) {
-        const visRows = rows.flatMap((r) => visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })))
-        const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
-        if (visError) throw visError
+      if (form.visibility !== 'all') {
+        const visRows = rows.flatMap((r) => [
+          ...visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })),
+          ...standingAttributeValueIds.map((attribute_value_id) => ({ task_id: r.id, attribute_value_id })),
+          ...standingRoleIds.map((club_role_id) => ({ task_id: r.id, club_role_id })),
+        ])
+        if (visRows.length > 0) {
+          const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
+          if (visError) throw visError
+        }
       }
       return rows.length
     },
@@ -410,6 +446,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setVisFilters([{ ...EMPTY_FILTER }])
       setVisFilterRoleId('')
       setVisibleToIds([])
+      setStandingAttributeValueIds([])
+      setStandingRoleIds([])
       onOpenChange(false)
     },
     onError: (err) => toast.error(`追加に失敗しました: ${err.message}`),
@@ -624,6 +662,19 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                             ))}
                         </SelectContent>
                       </Select>
+                      <button
+                        type="button"
+                        onClick={() => toggleStandingAttributeValue(f.valueId)}
+                        disabled={!f.valueId}
+                        className={cn(
+                          'transition-colors hover:text-primary disabled:opacity-30',
+                          standingAttributeValueIds.includes(f.valueId) ? 'text-primary' : 'text-muted-foreground'
+                        )}
+                        aria-label="この属性値を対象に追加（自動更新）"
+                        title="この属性値を対象に追加（自動更新）"
+                      >
+                        <RefreshCw className="h-4 w-4" />
+                      </button>
                       {visFilters.length > 1 && (
                         <button type="button" onClick={() => removeVisFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
                           <Trash2 className="h-4 w-4" />
@@ -640,7 +691,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                     </Button>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                    条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。{' '}
+                    <RefreshCw className="inline h-3 w-3" />で属性値そのものを対象に追加すると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
                   </p>
                   {visMatchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
                   {!visMatchingLoading && validVisFilters.length > 0 && visMatchedProfiles?.length === 0 && (
@@ -665,7 +717,14 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                       <Button type="button" size="sm" variant="secondary" disabled={!visFilterRoleId} onClick={applyVisRoleFilter}>
                         この条件で選択を切替
                       </Button>
+                      <Button type="button" size="sm" variant="outline" disabled={!visFilterRoleId} onClick={toggleStandingRole}>
+                        <RefreshCw className="h-4 w-4" />
+                        役職を対象に追加
+                      </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      役職そのものを対象にすると、後からその役職に就いた人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                    </p>
                   </div>
 
                   <div className="space-y-1.5 pt-2">
@@ -680,6 +739,38 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                         </Button>
                       </div>
                     </div>
+                    {(standingAttributeValueIds.length > 0 || standingRoleIds.length > 0) && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {standingAttributeValueIds.map((id) => (
+                          <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                            <RefreshCw className="h-3 w-3" />
+                            {attributeValues?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
+                            <button
+                              type="button"
+                              onClick={() => setStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
+                              className="ml-0.5 hover:text-destructive"
+                              aria-label="削除"
+                            >
+                              ×
+                            </button>
+                          </Badge>
+                        ))}
+                        {standingRoleIds.map((id) => (
+                          <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                            <RefreshCw className="h-3 w-3" />
+                            {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
+                            <button
+                              type="button"
+                              onClick={() => setStandingRoleIds((prev) => prev.filter((x) => x !== id))}
+                              className="ml-0.5 hover:text-destructive"
+                              aria-label="削除"
+                            >
+                              ×
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
                     <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
                       {members?.map((m) => (
                         <label key={m.id} className="flex items-center gap-2 text-sm">

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, useOutletContext } from 'react-router-dom'
-import { Calendar, CalendarClock, ChevronDown, Clock, Link2, MapPin, Paperclip, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
+import { Calendar, CalendarClock, ChevronDown, Clock, Link2, MapPin, Paperclip, Pencil, Plus, RefreshCw, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { safeStorageFilename } from '@/lib/storage'
@@ -148,6 +148,15 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
   const [rsvpFilterAttrId, setRsvpFilterAttrId] = useState('')
   const [rsvpFilterValueId, setRsvpFilterValueId] = useState('')
   const [rsvpFilterRoleId, setRsvpFilterRoleId] = useState('')
+  // "Standing" targets: instead of resolving the filter to today's matching
+  // profiles, remember the attribute value / role itself so membership stays
+  // live (see 0064_dynamic_group_targets.sql). Parallel to inviteeIds /
+  // rsvpViewerIds, not a replacement -- all kinds of rows go into the same
+  // event_invitees / event_rsvp_viewers tables.
+  const [standingAttributeValueIds, setStandingAttributeValueIds] = useState([])
+  const [standingRoleIds, setStandingRoleIds] = useState([])
+  const [rsvpStandingAttributeValueIds, setRsvpStandingAttributeValueIds] = useState([])
+  const [rsvpStandingRoleIds, setRsvpStandingRoleIds] = useState([])
   const [customCategory, setCustomCategory] = useState(
     mode === 'edit' && event.category && !CATEGORY_LABEL[event.category] ? event.category : ''
   )
@@ -168,29 +177,35 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
   const { data: existingInvitees } = useQuery({
     queryKey: ['event_invitees', event?.id],
     queryFn: async () => {
-      const { data, error } = await supabase.from('event_invitees').select('profile_id').eq('event_id', event.id)
+      const { data, error } = await supabase.from('event_invitees').select('profile_id, attribute_value_id, club_role_id').eq('event_id', event.id)
       if (error) throw error
-      return data.map((r) => r.profile_id)
+      return data
     },
     enabled: mode === 'edit' && open && event.visibility === 'invite_only',
   })
 
   useEffect(() => {
-    if (existingInvitees) setForm((f) => ({ ...f, inviteeIds: existingInvitees }))
+    if (!existingInvitees) return
+    setForm((f) => ({ ...f, inviteeIds: existingInvitees.filter((r) => r.profile_id).map((r) => r.profile_id) }))
+    setStandingAttributeValueIds(existingInvitees.filter((r) => r.attribute_value_id).map((r) => r.attribute_value_id))
+    setStandingRoleIds(existingInvitees.filter((r) => r.club_role_id).map((r) => r.club_role_id))
   }, [existingInvitees])
 
   const { data: existingRsvpViewers } = useQuery({
     queryKey: ['event_rsvp_viewers', event?.id],
     queryFn: async () => {
-      const { data, error } = await supabase.from('event_rsvp_viewers').select('profile_id').eq('event_id', event.id)
+      const { data, error } = await supabase.from('event_rsvp_viewers').select('profile_id, attribute_value_id, club_role_id').eq('event_id', event.id)
       if (error) throw error
-      return data.map((r) => r.profile_id)
+      return data
     },
     enabled: mode === 'edit' && open && event.rsvp_visibility === 'restricted',
   })
 
   useEffect(() => {
-    if (existingRsvpViewers) setForm((f) => ({ ...f, rsvpViewerIds: existingRsvpViewers }))
+    if (!existingRsvpViewers) return
+    setForm((f) => ({ ...f, rsvpViewerIds: existingRsvpViewers.filter((r) => r.profile_id).map((r) => r.profile_id) }))
+    setRsvpStandingAttributeValueIds(existingRsvpViewers.filter((r) => r.attribute_value_id).map((r) => r.attribute_value_id))
+    setRsvpStandingRoleIds(existingRsvpViewers.filter((r) => r.club_role_id).map((r) => r.club_role_id))
   }, [existingRsvpViewers])
 
   // Attribute-based bulk selection: pick an attribute + value, then flip
@@ -235,6 +250,30 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       return data
     },
     enabled: !!rsvpFilterAttrId,
+  })
+
+  // Label lookups for standing-target chips: standing*AttributeValueIds can
+  // span attributes other than the one currently selected in the filter
+  // above, so they need their own by-id fetch rather than reusing
+  // attributeValues/rsvpAttributeValues.
+  const { data: standingAttributeValueLabels } = useQuery({
+    queryKey: ['member_attribute_values', 'standing-labels', standingAttributeValueIds],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').in('id', standingAttributeValueIds)
+      if (error) throw error
+      return data
+    },
+    enabled: standingAttributeValueIds.length > 0,
+  })
+
+  const { data: rsvpStandingAttributeValueLabels } = useQuery({
+    queryKey: ['member_attribute_values', 'rsvp-standing-labels', rsvpStandingAttributeValueIds],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').in('id', rsvpStandingAttributeValueIds)
+      if (error) throw error
+      return data
+    },
+    enabled: rsvpStandingAttributeValueIds.length > 0,
   })
 
   // Role-based bulk selection (same XOR-toggle pattern as the attribute
@@ -300,6 +339,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     }
     setForm((f) => ({ ...f, inviteeIds: Array.from(next) }))
     toast.success(`${added}人を選択、${removed}人を解除しました`)
+  }
+
+  // Adds/removes the currently-selected attribute value or role itself as a
+  // standing target, reusing the same filterValueId/filterRoleId selection
+  // as the flip-toggle above -- no profile resolution, just remembering the id.
+  function toggleStandingAttributeValue() {
+    if (!filterValueId) return
+    setStandingAttributeValueIds((prev) => (prev.includes(filterValueId) ? prev.filter((x) => x !== filterValueId) : [...prev, filterValueId]))
+  }
+
+  function toggleStandingRole() {
+    if (!filterRoleId) return
+    const roleId = Number(filterRoleId)
+    setStandingRoleIds((prev) => (prev.includes(roleId) ? prev.filter((x) => x !== roleId) : [...prev, roleId]))
   }
 
   function toggleInvitee(id) {
@@ -370,6 +423,20 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
     toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
 
+  // Same standing-target toggle as above, but for the RSVP-viewer picker.
+  function toggleRsvpStandingAttributeValue() {
+    if (!rsvpFilterValueId) return
+    setRsvpStandingAttributeValueIds((prev) =>
+      prev.includes(rsvpFilterValueId) ? prev.filter((x) => x !== rsvpFilterValueId) : [...prev, rsvpFilterValueId]
+    )
+  }
+
+  function toggleRsvpStandingRole() {
+    if (!rsvpFilterRoleId) return
+    const roleId = Number(rsvpFilterRoleId)
+    setRsvpStandingRoleIds((prev) => (prev.includes(roleId) ? prev.filter((x) => x !== roleId) : [...prev, roleId]))
+  }
+
   function toggleRsvpViewer(id) {
     setForm((f) => ({
       ...f,
@@ -428,16 +495,28 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         if (error) throw error
       }
 
-      if (form.visibility === 'invite_only' && form.inviteeIds.length > 0) {
-        const { error: inviteError } = await supabase.from('event_invitees').insert(form.inviteeIds.map((profile_id) => ({ event_id: eventId, profile_id })))
-        if (inviteError) throw inviteError
+      if (form.visibility === 'invite_only') {
+        const inviteRows = [
+          ...form.inviteeIds.map((profile_id) => ({ event_id: eventId, profile_id })),
+          ...standingAttributeValueIds.map((attribute_value_id) => ({ event_id: eventId, attribute_value_id })),
+          ...standingRoleIds.map((club_role_id) => ({ event_id: eventId, club_role_id })),
+        ]
+        if (inviteRows.length > 0) {
+          const { error: inviteError } = await supabase.from('event_invitees').insert(inviteRows)
+          if (inviteError) throw inviteError
+        }
       }
 
-      if (form.rsvpRestricted && form.rsvpViewerIds.length > 0) {
-        const { error: viewerError } = await supabase
-          .from('event_rsvp_viewers')
-          .insert(form.rsvpViewerIds.map((profile_id) => ({ event_id: eventId, profile_id })))
-        if (viewerError) throw viewerError
+      if (form.rsvpRestricted) {
+        const viewerRows = [
+          ...form.rsvpViewerIds.map((profile_id) => ({ event_id: eventId, profile_id })),
+          ...rsvpStandingAttributeValueIds.map((attribute_value_id) => ({ event_id: eventId, attribute_value_id })),
+          ...rsvpStandingRoleIds.map((club_role_id) => ({ event_id: eventId, club_role_id })),
+        ]
+        if (viewerRows.length > 0) {
+          const { error: viewerError } = await supabase.from('event_rsvp_viewers').insert(viewerRows)
+          if (viewerError) throw viewerError
+        }
       }
     },
     onSuccess: () => {
@@ -456,6 +535,10 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
         setRsvpFilterAttrId('')
         setRsvpFilterValueId('')
         setRsvpFilterRoleId('')
+        setStandingAttributeValueIds([])
+        setStandingRoleIds([])
+        setRsvpStandingAttributeValueIds([])
+        setRsvpStandingRoleIds([])
       }
       onOpenChange(false)
     },
@@ -629,6 +712,13 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!filterValueId} onClick={toggleStandingAttributeValue}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この属性値を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  属性そのものを対象にすると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="space-y-1.5 rounded-xl border border-input p-2">
                 <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
@@ -652,6 +742,13 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!filterRoleId} onClick={toggleStandingRole}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この役職を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  役職そのものを対象にすると、後からその役職に就いた人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={selectAllInvitees}>
@@ -661,6 +758,38 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                   全員解除
                 </Button>
               </div>
+              {(standingAttributeValueIds.length > 0 || standingRoleIds.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {standingAttributeValueIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {standingAttributeValueLabels?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                  {standingRoleIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setStandingRoleIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
                 {members?.map((m) => (
                   <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
@@ -733,6 +862,13 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!rsvpFilterValueId} onClick={toggleRsvpStandingAttributeValue}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この属性値を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  属性そのものを対象にすると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="space-y-1.5 rounded-xl border border-input p-2">
                 <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
@@ -756,6 +892,13 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!rsvpFilterRoleId} onClick={toggleRsvpStandingRole}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この役職を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  役職そのものを対象にすると、後からその役職に就いた人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={selectAllRsvpViewers}>
@@ -765,6 +908,38 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
                   全員解除
                 </Button>
               </div>
+              {(rsvpStandingAttributeValueIds.length > 0 || rsvpStandingRoleIds.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {rsvpStandingAttributeValueIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {rsvpStandingAttributeValueLabels?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setRsvpStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                  {rsvpStandingRoleIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setRsvpStandingRoleIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
                 {members?.map((m) => (
                   <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">

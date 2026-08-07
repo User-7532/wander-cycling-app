@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useOutletContext } from 'react-router-dom'
-import { Megaphone, Pencil, Pin, Plus, Trash2, Users } from 'lucide-react'
+import { Megaphone, Pencil, Pin, Plus, RefreshCw, Trash2, Users } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
 import { Badge } from '@/components/ui/badge'
@@ -45,6 +45,12 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
   const [filterAttrId, setFilterAttrId] = useState('')
   const [filterValueId, setFilterValueId] = useState('')
   const [filterRoleId, setFilterRoleId] = useState('')
+  // "Standing" targets: instead of resolving the filter to today's matching
+  // profiles, remember the attribute value / role itself so membership stays
+  // live (see 0064_dynamic_group_targets.sql). Parallel to recipientIds, not
+  // a replacement -- both kinds of rows go into announcement_recipients.
+  const [standingAttributeValueIds, setStandingAttributeValueIds] = useState([])
+  const [standingRoleIds, setStandingRoleIds] = useState([])
   const queryClient = useQueryClient()
 
   const { data: members } = useQuery({
@@ -60,15 +66,21 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
   const { data: existingRecipients } = useQuery({
     queryKey: ['announcement_recipients', announcement?.id],
     queryFn: async () => {
-      const { data, error } = await supabase.from('announcement_recipients').select('profile_id').eq('announcement_id', announcement.id)
+      const { data, error } = await supabase
+        .from('announcement_recipients')
+        .select('profile_id, attribute_value_id, club_role_id')
+        .eq('announcement_id', announcement.id)
       if (error) throw error
-      return data.map((r) => r.profile_id)
+      return data
     },
     enabled: mode === 'edit' && open && announcement.visibility === 'targeted',
   })
 
   useEffect(() => {
-    if (existingRecipients) setForm((f) => ({ ...f, recipientIds: existingRecipients }))
+    if (!existingRecipients) return
+    setForm((f) => ({ ...f, recipientIds: existingRecipients.filter((r) => r.profile_id).map((r) => r.profile_id) }))
+    setStandingAttributeValueIds(existingRecipients.filter((r) => r.attribute_value_id).map((r) => r.attribute_value_id))
+    setStandingRoleIds(existingRecipients.filter((r) => r.club_role_id).map((r) => r.club_role_id))
   }, [existingRecipients])
 
   // Attribute-based bulk selection: pick an attribute + value, then flip
@@ -98,6 +110,19 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
       return data
     },
     enabled: !!filterAttrId,
+  })
+
+  // Label lookup for standing-target chips: standingAttributeValueIds can
+  // span attributes other than the one currently selected in the filter
+  // above, so it needs its own by-id fetch rather than reusing attributeValues.
+  const { data: standingAttributeValueLabels } = useQuery({
+    queryKey: ['member_attribute_values', 'standing-labels', standingAttributeValueIds],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').in('id', standingAttributeValueIds)
+      if (error) throw error
+      return data
+    },
+    enabled: standingAttributeValueIds.length > 0,
   })
 
   // Role-based bulk selection (same XOR-toggle pattern as the attribute
@@ -164,6 +189,20 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
     toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
 
+  // Adds/removes the currently-selected attribute value or role itself as a
+  // standing target, reusing the same filterValueId/filterRoleId selection
+  // as the flip-toggle above -- no profile resolution, just remembering the id.
+  function toggleStandingAttributeValue() {
+    if (!filterValueId) return
+    setStandingAttributeValueIds((prev) => (prev.includes(filterValueId) ? prev.filter((x) => x !== filterValueId) : [...prev, filterValueId]))
+  }
+
+  function toggleStandingRole() {
+    if (!filterRoleId) return
+    const roleId = Number(filterRoleId)
+    setStandingRoleIds((prev) => (prev.includes(roleId) ? prev.filter((x) => x !== roleId) : [...prev, roleId]))
+  }
+
   function toggleRecipient(id) {
     setForm((f) => ({
       ...f,
@@ -194,11 +233,16 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
         if (error) throw error
       }
 
-      if (form.visibility === 'targeted' && form.recipientIds.length > 0) {
-        const { error: recipientError } = await supabase
-          .from('announcement_recipients')
-          .insert(form.recipientIds.map((profile_id) => ({ announcement_id: announcementId, profile_id })))
-        if (recipientError) throw recipientError
+      if (form.visibility === 'targeted') {
+        const recipientRows = [
+          ...form.recipientIds.map((profile_id) => ({ announcement_id: announcementId, profile_id })),
+          ...standingAttributeValueIds.map((attribute_value_id) => ({ announcement_id: announcementId, attribute_value_id })),
+          ...standingRoleIds.map((club_role_id) => ({ announcement_id: announcementId, club_role_id })),
+        ]
+        if (recipientRows.length > 0) {
+          const { error: recipientError } = await supabase.from('announcement_recipients').insert(recipientRows)
+          if (recipientError) throw recipientError
+        }
       }
     },
     onSuccess: () => {
@@ -211,6 +255,8 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
         setFilterAttrId('')
         setFilterValueId('')
         setFilterRoleId('')
+        setStandingAttributeValueIds([])
+        setStandingRoleIds([])
       }
       onOpenChange(false)
     },
@@ -320,6 +366,13 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!filterValueId} onClick={toggleStandingAttributeValue}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この属性値を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  属性そのものを対象にすると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="space-y-1.5 rounded-xl border border-input p-2">
                 <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
@@ -343,6 +396,13 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
                 <p className="text-xs text-muted-foreground">
                   該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
                 </p>
+                <Button type="button" size="sm" variant="outline" disabled={!filterRoleId} onClick={toggleStandingRole}>
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この役職を対象に追加（自動更新）
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  役職そのものを対象にすると、後からその役職に就いた人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button type="button" size="sm" variant="outline" onClick={selectAllRecipients}>
@@ -352,6 +412,38 @@ function AnnouncementFormDialog({ mode, announcement, trigger, open, onOpenChang
                   全員解除
                 </Button>
               </div>
+              {(standingAttributeValueIds.length > 0 || standingRoleIds.length > 0) && (
+                <div className="flex flex-wrap gap-1.5">
+                  {standingAttributeValueIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {standingAttributeValueLabels?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                  {standingRoleIds.map((id) => (
+                    <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                      <RefreshCw className="h-3 w-3" />
+                      {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
+                      <button
+                        type="button"
+                        onClick={() => setStandingRoleIds((prev) => prev.filter((x) => x !== id))}
+                        className="ml-0.5 hover:text-destructive"
+                        aria-label="削除"
+                      >
+                        ×
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
               <div className="max-h-40 space-y-1 overflow-y-auto rounded-xl border border-input p-2">
                 {members?.map((m) => (
                   <label key={m.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-muted/50">
