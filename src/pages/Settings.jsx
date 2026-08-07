@@ -29,6 +29,7 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { FONT_OPTIONS } from '@/lib/theme'
+import { safeStorageFilename } from '@/lib/storage'
 
 const CALENDAR_FEED_BASE = 'https://vygnnwtxokbizejxtdyc.supabase.co/functions/v1/calendar-feed'
 
@@ -121,7 +122,7 @@ function BackgroundSection({ profile }) {
 
   const upload = useMutation({
     mutationFn: async (file) => {
-      const path = `${profile.id}/${file.name}`
+      const path = `${profile.id}/${safeStorageFilename(file.name)}`
       const { error: uploadError } = await supabase.storage.from('profile-backgrounds').upload(path, file, { upsert: true })
       if (uploadError) throw uploadError
       const { error } = await supabase.from('profiles').update({ background_url: path, background_mode: 'image' }).eq('id', profile.id)
@@ -324,7 +325,7 @@ function FontSection({ profile }) {
 
   const uploadFont = useMutation({
     mutationFn: async (file) => {
-      const path = `${profile.id}/${file.name}`
+      const path = `${profile.id}/${safeStorageFilename(file.name)}`
       const { error: uploadError } = await supabase.storage.from('profile-fonts').upload(path, file, { upsert: true })
       if (uploadError) throw uploadError
       const { error } = await supabase.from('profiles').update({ font_choice: 'custom', custom_font_url: path }).eq('id', profile.id)
@@ -673,7 +674,7 @@ function GallerySection({ profile }) {
 
   const upload = useMutation({
     mutationFn: async (file) => {
-      const path = `${profile.id}/${Date.now()}-${file.name}`
+      const path = `${profile.id}/${safeStorageFilename(file.name)}`
       const { error: uploadError } = await supabase.storage.from('profile-gallery').upload(path, file)
       if (uploadError) throw uploadError
       const { error } = await supabase.from('profile_gallery_images').insert({ profile_id: profile.id, path, caption: caption.trim() || null })

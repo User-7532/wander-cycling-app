@@ -5,6 +5,7 @@ import { Link as RouterLink, useOutletContext } from 'react-router-dom'
 import { Calendar, CalendarClock, ChevronDown, Clock, Link2, MapPin, Paperclip, Pencil, Plus, Search, Trash2, Users, UserRoundCheck } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
+import { safeStorageFilename } from '@/lib/storage'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -393,7 +394,7 @@ function EventFormDialog({ mode, event, trigger, open, onOpenChange }) {
       let attachmentPath = mode === 'edit' ? event.attachment_path ?? null : null
       if (removeAttachment) attachmentPath = null
       if (file) {
-        attachmentPath = `${eventId}/${file.name}`
+        attachmentPath = `${eventId}/${safeStorageFilename(file.name)}`
         const { error: uploadError } = await supabase.storage.from('event-attachments').upload(attachmentPath, file, { upsert: true })
         if (uploadError) throw uploadError
       }

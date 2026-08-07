@@ -4,6 +4,7 @@ import { useOutletContext } from 'react-router-dom'
 import { Banknote, Camera, CircleCheck, CircleDollarSign, Pencil, Plus, Receipt, Trash2, Wallet } from 'lucide-react'
 import { toast } from 'sonner'
 import { supabase } from '@/supabase'
+import { safeStorageFilename } from '@/lib/storage'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card } from '@/components/ui/card'
@@ -375,7 +376,7 @@ function SubmitReimbursementDialog({ userId, trigger, open, onOpenChange }) {
     mutationFn: async () => {
       let receiptPath = null
       if (file) {
-        receiptPath = `${userId}/${Date.now()}-${file.name}`
+        receiptPath = `${userId}/${safeStorageFilename(file.name)}`
         const { error: uploadError } = await supabase.storage.from('receipts').upload(receiptPath, file)
         if (uploadError) throw uploadError
       }
