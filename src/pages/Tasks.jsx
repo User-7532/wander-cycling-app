@@ -105,6 +105,32 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [selectedIds, setSelectedIds] = useState(() => new Set())
   const queryClient = useQueryClient()
 
+  // When opened from a bundled 協働タスク card, `task` carries the full
+  // sibling list (see Tasks()'s displayedTasks). Editing then applies the
+  // shared fields (title/description/priority/due_at/visibility/
+  // task_visible_to) to every sibling row at once instead of just `task`
+  // itself -- there's no single "reassign the whole group" concept, so
+  // 担当者 is shown read-only rather than as an editable picker.
+  const groupMembers = mode === 'edit' ? (task._groupMembers ?? [task]) : []
+  const isGroupEdit = groupMembers.length > 1
+  // If (some of) the group was materialized from a 自動更新 template, show
+  // the attribute/role driving it instead of enumerating every current
+  // member -- same reasoning as the card in Tasks() below.
+  const groupTemplateId = groupMembers.find((m) => m.template_id)?.template_id
+  const { data: groupTemplateLabel } = useQuery({
+    queryKey: ['task_templates', 'label', groupTemplateId],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('task_templates')
+        .select('attribute_value:member_attribute_values(value), club_role:club_roles(label_ja)')
+        .eq('id', groupTemplateId)
+        .maybeSingle()
+      if (error) throw error
+      return data?.attribute_value?.value ?? data?.club_role?.label_ja ?? null
+    },
+    enabled: !!groupTemplateId,
+  })
+
   // Existing task_visible_to rows, for prefilling visibleToIds in edit mode
   // (same shape as Schedule.jsx's existingInvitees / event_invitees).
   const { data: existingVisibleTo } = useQuery({
@@ -126,30 +152,32 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      const taskId = mode === 'edit' ? task.id : crypto.randomUUID()
+      const taskIds = mode === 'edit' ? (isGroupEdit ? groupMembers.map((m) => m.id) : [task.id]) : [crypto.randomUUID()]
       const payload = {
         title: form.title,
         description: form.description || null,
-        assigned_to: form.assigned_to || null,
         priority: form.priority,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
         visibility: form.visibility,
+        // assigned_to is per-row and NOT part of a group edit's shared
+        // fields -- each sibling keeps its own assignee.
+        ...(isGroupEdit ? {} : { assigned_to: form.assigned_to || null }),
       }
       if (mode === 'edit') {
-        const { error } = await supabase.from('tasks').update(payload).eq('id', taskId)
+        const { error } = await supabase.from('tasks').update(payload).in('id', taskIds)
         if (error) throw error
-        await supabase.from('task_visible_to').delete().eq('task_id', taskId)
+        await supabase.from('task_visible_to').delete().in('task_id', taskIds)
       } else {
-        const { error } = await supabase.from('tasks').insert({ id: taskId, ...payload })
+        const { error } = await supabase.from('tasks').insert({ id: taskIds[0], ...payload })
         if (error) throw error
       }
 
       if (form.visibility !== 'all') {
-        const visRows = [
+        const visRows = taskIds.flatMap((taskId) => [
           ...visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })),
           ...standingAttributeValueIds.map((attribute_value_id) => ({ task_id: taskId, attribute_value_id })),
           ...standingRoleIds.map((club_role_id) => ({ task_id: taskId, club_role_id })),
-        ]
+        ])
         if (visRows.length > 0) {
           const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
           if (visError) throw visError
@@ -525,19 +553,30 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           </div>
           {!(mode === 'create' && bulkMode) ? (
             <div className="space-y-1.5">
-              <Label>担当者（任意）</Label>
-              <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="選択してください" />
-                </SelectTrigger>
-                <SelectContent>
-                  {members?.map((m) => (
-                    <SelectItem key={m.id} value={m.id}>
-                      {m.full_name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              <Label>担当者{isGroupEdit ? '（協働タスク・変更不可）' : '（任意）'}</Label>
+              {isGroupEdit ? (
+                <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
+                  {groupTemplateId
+                    ? [
+                        groupTemplateLabel ? `${groupTemplateLabel}（自動更新）` : '...',
+                        ...groupMembers.filter((m) => !m.template_id).map((m) => m.assignee?.full_name).filter(Boolean),
+                      ].join('、')
+                    : groupMembers.map((m) => m.assignee?.full_name).filter(Boolean).join('、')}
+                </div>
+              ) : (
+                <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="選択してください" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {members?.map((m) => (
+                      <SelectItem key={m.id} value={m.id}>
+                        {m.full_name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           ) : (
             <div className="space-y-3 rounded-lg border p-3">
@@ -938,6 +977,29 @@ export default function Tasks() {
     },
   })
 
+  // Labels for tasks materialized from a 自動更新 (standing attribute/role)
+  // template -- lets the card show "60代（自動更新）" instead of enumerating
+  // every current member, which is both more concise and more accurate
+  // (the point of a standing target is that the member list isn't fixed).
+  const templateIds = useMemo(() => [...new Set((tasks ?? []).map((t) => t.template_id).filter(Boolean))], [tasks])
+  const { data: taskTemplates } = useQuery({
+    queryKey: ['task_templates', 'labels', templateIds],
+    queryFn: async () => {
+      const { data, error } = await supabase
+        .from('task_templates')
+        .select('id, attribute_value:member_attribute_values(value), club_role:club_roles(label_ja)')
+        .in('id', templateIds)
+      if (error) throw error
+      return data
+    },
+    enabled: templateIds.length > 0,
+  })
+  const templateLabelById = useMemo(() => {
+    const map = {}
+    for (const t of taskTemplates ?? []) map[t.id] = t.attribute_value?.value ?? t.club_role?.label_ja ?? null
+    return map
+  }, [taskTemplates])
+
   const { data: members } = useQuery({
     queryKey: ['profiles', 'for-assignment'],
     queryFn: async () => {
@@ -1013,20 +1075,25 @@ export default function Tasks() {
   const displayedTasks = useMemo(() => {
     if (!canFilterView) return tasks
 
+    // Always resolve a task's full group membership from the COMPLETE task
+    // list (never a filter-narrowed subset), so its card/edit dialog show
+    // the true collaborator list no matter which view (自分のみ／特定の人／
+    // 条件を満たす人) surfaced it. Only how many CARDS appear differs by view.
+    const groupsById = new Map()
+    for (const t of tasks ?? []) {
+      if (!t.task_group_id) continue
+      if (!groupsById.has(t.task_group_id)) groupsById.set(t.task_group_id, [])
+      groupsById.get(t.task_group_id).push(t)
+    }
+    const withGroup = (t) => (t.task_group_id ? { ...t, _groupMembers: groupsById.get(t.task_group_id) } : t)
+
     if (viewFilter === 'mine') {
-      return (tasks ?? []).filter((t) => t.assigned_to === profile?.id)
+      return (tasks ?? []).filter((t) => t.assigned_to === profile?.id).map(withGroup)
     }
 
     const matchIds = viewFilter === 'specific' ? (viewFilterProfileId ? [viewFilterProfileId] : []) : (viewFilterProfileIds ?? [])
     const matchSet = new Set(matchIds)
     if (matchSet.size === 0) return []
-
-    const groupsById = new Map()
-    for (const t of tasks ?? []) {
-      if (!t.task_group_id) continue
-      if (!groupsById.has(t.task_group_id)) groupsById.set(t.task_group_id, { ...t, _groupMembers: [] })
-      groupsById.get(t.task_group_id)._groupMembers.push(t)
-    }
 
     const result = []
     const shownGroupIds = new Set()
@@ -1035,10 +1102,8 @@ export default function Tasks() {
       if (t.task_group_id) {
         if (shownGroupIds.has(t.task_group_id)) continue
         shownGroupIds.add(t.task_group_id)
-        result.push(groupsById.get(t.task_group_id))
-      } else {
-        result.push(t)
       }
+      result.push(withGroup(t))
     }
     return result
   }, [tasks, canFilterView, viewFilter, profile?.id, viewFilterProfileId, viewFilterProfileIds])
@@ -1220,7 +1285,11 @@ export default function Tasks() {
           const overdue = isOverdue(t)
           const groupMembers = t._groupMembers ?? [t]
           const isBundled = groupMembers.length > 1
-          const assigneeNames = groupMembers.map((m) => m.assignee?.full_name).filter(Boolean).join('、')
+          const groupTemplateId = groupMembers.find((m) => m.template_id)?.template_id
+          const autoLabel = groupTemplateId ? templateLabelById[groupTemplateId] : null
+          const assigneeNames = autoLabel
+            ? [`${autoLabel}（自動更新）`, ...groupMembers.filter((m) => !m.template_id).map((m) => m.assignee?.full_name).filter(Boolean)].join('、')
+            : groupMembers.map((m) => m.assignee?.full_name).filter(Boolean).join('、')
           return (
           <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
             <Card className={cn('p-5', t.status === 'done' && 'opacity-60')}>
@@ -1236,11 +1305,9 @@ export default function Tasks() {
                   </Badge>
                   {isExecutive && (
                     <>
-                      {!isBundled && (
-                        <button onClick={() => setEditing(t)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                      )}
+                      <button onClick={() => setEditing(t)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
+                        <Pencil className="h-3.5 w-3.5" />
+                      </button>
                       <button
                         onClick={() => {
                           const label = isBundled ? `このタスクを削除しますか？（${groupMembers.length}人分すべて削除されます）` : 'このタスクを削除しますか？'
