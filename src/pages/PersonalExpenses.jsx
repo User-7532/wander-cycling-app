@@ -13,16 +13,12 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 
-const CATEGORY_LABEL = {
-  transport: '交通費',
-  lodging: '宿泊費',
-  food: '食費',
-  gear: '装備・道具',
-  rental: 'レンタル',
-  membership: '部費・会費',
-  other: 'その他',
-}
-const CATEGORY_ORDER = ['transport', 'lodging', 'food', 'gear', 'rental', 'membership', 'other']
+// Built-in starting categories. category is plain text (the label itself,
+// e.g. '交通費') rather than a fixed enum key, so these and any
+// self-added custom category (personal_expense_categories, 0072) are
+// handled identically by the picker below.
+const DEFAULT_CATEGORIES = ['交通費', '宿泊費', '食費', '装備・道具', '部費・会費', 'その他']
+const ADD_CATEGORY_SENTINEL = '__add_category__'
 
 function todayLocal() {
   const d = new Date()
@@ -41,15 +37,17 @@ function tierLabel(percentile) {
   return '太っ腹スポンサー枠🎉'
 }
 
-function ExpenseFormDialog({ mode, record, userId, trigger, open, onOpenChange }) {
+function ExpenseFormDialog({ mode, record, userId, categories, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(mode === 'edit' ? { ...record, amount_jpy: String(record.amount_jpy) } : EMPTY_FORM)
+  const [addingCategory, setAddingCategory] = useState(false)
   const queryClient = useQueryClient()
 
   const save = useMutation({
     mutationFn: async () => {
+      const category = form.category.trim()
       const payload = {
         entry_date: form.entry_date,
-        category: form.category,
+        category,
         amount_jpy: Number(form.amount_jpy),
         description: form.description || null,
       }
@@ -58,12 +56,22 @@ function ExpenseFormDialog({ mode, record, userId, trigger, open, onOpenChange }
           ? await supabase.from('personal_expenses').update(payload).eq('id', record.id)
           : await supabase.from('personal_expenses').insert({ ...payload, profile_id: userId })
       if (error) throw error
+
+      // Remember a newly-typed category so it shows up in the picker next
+      // time too, not just this once.
+      if (!categories.includes(category)) {
+        await supabase.from('personal_expense_categories').upsert({ profile_id: userId, label: category }, { onConflict: 'profile_id,label', ignoreDuplicates: true })
+      }
     },
     onSuccess: () => {
       toast.success(mode === 'edit' ? '更新しました' : '記録を追加しました')
       queryClient.invalidateQueries({ queryKey: ['personal_expenses'] })
+      queryClient.invalidateQueries({ queryKey: ['personal_expense_categories'] })
       queryClient.invalidateQueries({ queryKey: ['my_expense_rank'] })
-      if (mode === 'create') setForm(EMPTY_FORM)
+      if (mode === 'create') {
+        setForm(EMPTY_FORM)
+        setAddingCategory(false)
+      }
       onOpenChange(false)
     },
     onError: (err) => toast.error(`保存に失敗しました: ${err.message}`),
@@ -90,18 +98,39 @@ function ExpenseFormDialog({ mode, record, userId, trigger, open, onOpenChange }
             </div>
             <div className="space-y-1.5">
               <Label>カテゴリ</Label>
-              <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v })}>
-                <SelectTrigger>
-                  <SelectValue placeholder="選択" />
-                </SelectTrigger>
-                <SelectContent>
-                  {CATEGORY_ORDER.map((c) => (
-                    <SelectItem key={c} value={c}>
-                      {CATEGORY_LABEL[c]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              {addingCategory ? (
+                <Input
+                  autoFocus
+                  required
+                  placeholder="新しいカテゴリ名"
+                  value={form.category}
+                  onChange={(e) => setForm({ ...form, category: e.target.value })}
+                />
+              ) : (
+                <Select
+                  value={form.category}
+                  onValueChange={(v) => {
+                    if (v === ADD_CATEGORY_SENTINEL) {
+                      setAddingCategory(true)
+                      setForm({ ...form, category: '' })
+                    } else {
+                      setForm({ ...form, category: v })
+                    }
+                  }}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="選択" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {categories.map((c) => (
+                      <SelectItem key={c} value={c}>
+                        {c}
+                      </SelectItem>
+                    ))}
+                    <SelectItem value={ADD_CATEGORY_SENTINEL}>＋ 新しいカテゴリを追加</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
             </div>
           </div>
           <div className="space-y-1.5">
@@ -112,7 +141,7 @@ function ExpenseFormDialog({ mode, record, userId, trigger, open, onOpenChange }
             <Label htmlFor="pe-desc">メモ（任意）</Label>
             <Input id="pe-desc" placeholder="例: 合宿の交通費" value={form.description || ''} onChange={(e) => setForm({ ...form, description: e.target.value })} />
           </div>
-          <Button type="submit" className="w-full" disabled={save.isPending || !form.category}>
+          <Button type="submit" className="w-full" disabled={save.isPending || !form.category.trim()}>
             {mode === 'edit' ? '保存する' : '追加する'}
           </Button>
         </form>
@@ -136,6 +165,17 @@ export default function PersonalExpenses() {
     },
     enabled: !!user,
   })
+
+  const { data: customCategories } = useQuery({
+    queryKey: ['personal_expense_categories', user?.id],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('personal_expense_categories').select('label').order('created_at')
+      if (error) throw error
+      return data.map((r) => r.label)
+    },
+    enabled: !!user,
+  })
+  const categories = [...DEFAULT_CATEGORIES, ...(customCategories ?? []).filter((c) => !DEFAULT_CATEGORIES.includes(c))]
 
   // Never returns anyone else's amount -- see my_expense_rank() (0071):
   // security definer internally, but filtered to auth.uid() before
@@ -167,10 +207,11 @@ export default function PersonalExpenses() {
   const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   const totalThisMonth = records?.filter((r) => r.entry_date.startsWith(monthPrefix)).reduce((sum, r) => sum + r.amount_jpy, 0) ?? 0
 
-  const categoryTotals = CATEGORY_ORDER.map((c) => ({
-    category: c,
-    total: records?.filter((r) => r.category === c).reduce((sum, r) => sum + r.amount_jpy, 0) ?? 0,
-  })).filter((c) => c.total > 0)
+  const categoryTotalsMap = new Map()
+  for (const r of records ?? []) {
+    categoryTotalsMap.set(r.category, (categoryTotalsMap.get(r.category) ?? 0) + r.amount_jpy)
+  }
+  const categoryTotals = [...categoryTotalsMap.entries()].map(([category, total]) => ({ category, total }))
   const maxCategoryTotal = Math.max(1, ...categoryTotals.map((c) => c.total))
 
   const percentile = rank ? Math.round((100 * Number(rank.frugal_rank)) / Number(rank.total_ranked)) : null
@@ -224,7 +265,7 @@ export default function PersonalExpenses() {
             .map((c) => (
               <div key={c.category} className="space-y-1">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-muted-foreground">{CATEGORY_LABEL[c.category]}</span>
+                  <span className="text-muted-foreground">{c.category}</span>
                   <span className="font-medium">¥{c.total.toLocaleString()}</span>
                 </div>
                 <div className="h-1.5 overflow-hidden rounded-full bg-muted">
@@ -239,6 +280,7 @@ export default function PersonalExpenses() {
         <ExpenseFormDialog
           mode="create"
           userId={user?.id}
+          categories={categories}
           open={createOpen}
           onOpenChange={setCreateOpen}
           trigger={
@@ -259,7 +301,7 @@ export default function PersonalExpenses() {
         {records?.map((r) => (
           <Card key={r.id} className="flex items-center gap-3 px-4 py-3">
             <div className="flex-1">
-              <p className="text-sm font-bold">{CATEGORY_LABEL[r.category]}</p>
+              <p className="text-sm font-bold">{r.category}</p>
               <p className="text-xs text-muted-foreground">
                 {r.entry_date} {r.description && `・${r.description}`}
               </p>
@@ -282,7 +324,7 @@ export default function PersonalExpenses() {
       </div>
 
       {editing && (
-        <ExpenseFormDialog mode="edit" record={editing} userId={user?.id} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />
+        <ExpenseFormDialog mode="edit" record={editing} userId={user?.id} categories={categories} open={!!editing} onOpenChange={(v) => !v && setEditing(null)} />
       )}
     </div>
   )
