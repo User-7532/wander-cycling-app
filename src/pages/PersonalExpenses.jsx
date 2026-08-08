@@ -30,11 +30,11 @@ const EMPTY_FORM = { entry_date: todayLocal(), category: '', amount_jpy: '', des
 
 // 上位%（シャバさ度）に応じたひとことラベル -- ネタ機能なので大真面目にしない。
 function tierLabel(percentile) {
-  if (percentile <= 10) return '仙人級の節約家🧘'
-  if (percentile <= 30) return '堅実な倹約家💰'
-  if (percentile <= 60) return '普通の部員🚴'
-  if (percentile <= 85) return 'そこそこ使ってる派💸'
-  return '太っ腹スポンサー枠🎉'
+  if (percentile <= 10) return '仙人級の節約家'
+  if (percentile <= 30) return '堅実な倹約家'
+  if (percentile <= 60) return '普通の部員'
+  if (percentile <= 85) return 'そこそこ使ってる派'
+  return '太っ腹スポンサー枠'
 }
 
 function ExpenseFormDialog({ mode, record, userId, categories, trigger, open, onOpenChange }) {
@@ -91,47 +91,45 @@ function ExpenseFormDialog({ mode, record, userId, categories, trigger, open, on
           }}
           className="space-y-3"
         >
-          <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="pe-date">日付</Label>
-              <Input id="pe-date" type="date" required value={form.entry_date} onChange={(e) => setForm({ ...form, entry_date: e.target.value })} />
-            </div>
-            <div className="space-y-1.5">
-              <Label>カテゴリ</Label>
-              {addingCategory ? (
-                <Input
-                  autoFocus
-                  required
-                  placeholder="新しいカテゴリ名"
-                  value={form.category}
-                  onChange={(e) => setForm({ ...form, category: e.target.value })}
-                />
-              ) : (
-                <Select
-                  value={form.category}
-                  onValueChange={(v) => {
-                    if (v === ADD_CATEGORY_SENTINEL) {
-                      setAddingCategory(true)
-                      setForm({ ...form, category: '' })
-                    } else {
-                      setForm({ ...form, category: v })
-                    }
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="選択" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {categories.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                    <SelectItem value={ADD_CATEGORY_SENTINEL}>＋ 新しいカテゴリを追加</SelectItem>
-                  </SelectContent>
-                </Select>
-              )}
-            </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="pe-date">日付</Label>
+            <Input id="pe-date" type="date" required value={form.entry_date} onChange={(e) => setForm({ ...form, entry_date: e.target.value })} />
+          </div>
+          <div className="space-y-1.5">
+            <Label>カテゴリ</Label>
+            {addingCategory ? (
+              <Input
+                autoFocus
+                required
+                placeholder="新しいカテゴリ名"
+                value={form.category}
+                onChange={(e) => setForm({ ...form, category: e.target.value })}
+              />
+            ) : (
+              <Select
+                value={form.category}
+                onValueChange={(v) => {
+                  if (v === ADD_CATEGORY_SENTINEL) {
+                    setAddingCategory(true)
+                    setForm({ ...form, category: '' })
+                  } else {
+                    setForm({ ...form, category: v })
+                  }
+                }}
+              >
+                <SelectTrigger>
+                  <SelectValue placeholder="選択" />
+                </SelectTrigger>
+                <SelectContent>
+                  {categories.map((c) => (
+                    <SelectItem key={c} value={c}>
+                      {c}
+                    </SelectItem>
+                  ))}
+                  <SelectItem value={ADD_CATEGORY_SENTINEL}>＋ 新しいカテゴリを追加</SelectItem>
+                </SelectContent>
+              </Select>
+            )}
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="pe-amount">金額（円）</Label>
@@ -207,6 +205,16 @@ export default function PersonalExpenses() {
   const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`
   const totalThisMonth = records?.filter((r) => r.entry_date.startsWith(monthPrefix)).reduce((sum, r) => sum + r.amount_jpy, 0) ?? 0
 
+  // 月平均 = 累計 / 記録が始まった月から今月までの月数（最低1ヶ月）。
+  const monthsSinceFirstRecord =
+    records && records.length > 0
+      ? (() => {
+          const earliest = new Date(Math.min(...records.map((r) => new Date(r.entry_date).getTime())))
+          return (now.getFullYear() - earliest.getFullYear()) * 12 + (now.getMonth() - earliest.getMonth()) + 1
+        })()
+      : 1
+  const monthlyAverage = Math.round(totalAllTime / Math.max(1, monthsSinceFirstRecord))
+
   const categoryTotalsMap = new Map()
   for (const r of records ?? []) {
     categoryTotalsMap.set(r.category, (categoryTotalsMap.get(r.category) ?? 0) + r.amount_jpy)
@@ -217,7 +225,7 @@ export default function PersonalExpenses() {
   const percentile = rank ? Math.round((100 * Number(rank.frugal_rank)) / Number(rank.total_ranked)) : null
 
   const shareText = rank
-    ? `🚴 ワンダーサイクリング家計簿\n累計支出: ¥${totalAllTime.toLocaleString()}\n節約部門: ${rank.frugal_rank}位 / ${rank.total_ranked}人中（上位${percentile}%）\n${tierLabel(percentile)}`
+    ? `ワンダー家計簿\n月平均: ¥${monthlyAverage.toLocaleString()}\n今月: ¥${totalThisMonth.toLocaleString()}\n累計: ¥${totalAllTime.toLocaleString()}\n順位: ${rank.frugal_rank}位 / ${rank.total_ranked}人中（上位${percentile}%）\n${tierLabel(percentile)}`
     : ''
 
   return (
@@ -226,7 +234,7 @@ export default function PersonalExpenses() {
         <PiggyBank className="h-6 w-6 text-primary" />
         マイ家計簿
       </h1>
-      <p className="mb-6 text-sm text-muted-foreground">ワンダーサイクリングで使ったお金を記録（自分専用・他の人には見えません）</p>
+      <p className="mb-6 text-sm text-muted-foreground">ワンダーで使ったお金を記録（自分専用・他の人には見えません）</p>
 
       <div className="mb-4 grid grid-cols-2 gap-3">
         <Card className="p-4">
@@ -242,7 +250,7 @@ export default function PersonalExpenses() {
       {rank && (
         <Card className="mb-4 space-y-2 border-primary/30 bg-primary/5 p-4">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-bold">シャバさ度（節約部門）</p>
+            <p className="text-sm font-bold">シャバさ度</p>
             <Badge variant="secondary">{tierLabel(percentile)}</Badge>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -251,7 +259,7 @@ export default function PersonalExpenses() {
           <a href={`https://line.me/R/msg/text/?${encodeURIComponent(shareText)}`} target="_blank" rel="noopener noreferrer">
             <Button type="button" size="sm" variant="outline">
               <Send className="h-3.5 w-3.5" />
-              LINEでシェア
+              LINEで自慢する
             </Button>
           </a>
         </Card>

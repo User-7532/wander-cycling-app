@@ -30,7 +30,10 @@ DialogOverlay.displayName = DialogPrimitive.Overlay.displayName
 // instead of leaving it selected.
 function collapseCursorOnOpenAutoFocus(event) {
   event.preventDefault()
-  const field = event.currentTarget.querySelector('input, textarea')
+  // Skip date/datetime-local inputs -- focusing one immediately pops the
+  // native picker open on some browsers/platforms, which is jarring the
+  // instant a dialog opens. Find the first focusable field that isn't one.
+  const field = event.currentTarget.querySelector('input:not([type="date"]):not([type="datetime-local"]), textarea')
   if (field) {
     field.focus()
     if (typeof field.setSelectionRange === 'function') {
