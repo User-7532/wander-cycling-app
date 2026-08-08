@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link as RouterLink, useOutletContext } from 'react-router-dom'
@@ -702,6 +702,23 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                   ))}
                 </div>
               </div>
+              {(selectedProfiles.length > 1 || !!standingAssignTarget) && (
+                <div className="space-y-1.5 border-t pt-3">
+                  <Label>進行方式</Label>
+                  <Select value={sharedTask ? 'shared' : 'individual'} onValueChange={(v) => setSharedTask(v === 'shared')}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="individual">別々に進行（全員が自分の分を完了させる）</SelectItem>
+                      <SelectItem value="shared">協働タスク（誰か1人が完了したら全員分が完了になる）</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    例:「花火購入」のように、誰か1人がやれば全員にとって終わりのタスクは協働タスクを選んでください。
+                  </p>
+                </div>
+              )}
             </div>
           )}
           <div className="space-y-1.5">
@@ -885,23 +902,6 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               )}
             </div>
           )}
-          {mode === 'create' && bulkMode && (selectedProfiles.length > 1 || !!standingAssignTarget) && (
-            <div className="space-y-1.5 rounded-xl border border-input p-3">
-              <Label>進行方式</Label>
-              <Select value={sharedTask ? 'shared' : 'individual'} onValueChange={(v) => setSharedTask(v === 'shared')}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="individual">別々に進行（全員が自分の分を完了させる）</SelectItem>
-                  <SelectItem value="shared">協働タスク（誰か1人が完了したら全員分が完了になる）</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                例:「花火購入」のように、誰か1人がやれば全員にとって終わりのタスクは協働タスクを選んでください。
-              </p>
-            </div>
-          )}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
               <Label>優先度</Label>
@@ -1048,6 +1048,32 @@ export default function Tasks() {
         return t.assigned_to === profile?.id
       })
 
+  // Under "条件を満たす人" (a role/attribute can match several people at
+  // once), a 協働タスク shared across several matching members used to show
+  // up as one identical-looking card per person -- not elegant. Bundle rows
+  // sharing a task_group_id into a single card there. "自分のみ"/"特定の人"
+  // never have more than one matching row per group, so they're untouched.
+  const bundledTasks = useMemo(() => {
+    if (viewFilter !== 'condition' || !displayedTasks) return displayedTasks
+    const groups = new Map()
+    const result = []
+    for (const t of displayedTasks) {
+      if (!t.task_group_id) {
+        result.push(t)
+        continue
+      }
+      const bundle = groups.get(t.task_group_id)
+      if (bundle) {
+        bundle._groupMembers.push(t)
+      } else {
+        const newBundle = { ...t, _groupMembers: [t] }
+        groups.set(t.task_group_id, newBundle)
+        result.push(newBundle)
+      }
+    }
+    return result
+  }, [displayedTasks, viewFilter])
+
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }) => {
       const { error } = await supabase.from('tasks').update({ status }).eq('id', id)
@@ -1066,8 +1092,20 @@ export default function Tasks() {
     onError: (err) => toast.error(`削除に失敗しました: ${err.message}`),
   })
 
+  // Deletes every row in a bundled 協働タスク card at once -- a partial
+  // delete wouldn't make sense once they're displayed as one task.
+  const removeGroup = useMutation({
+    mutationFn: async (ids) => {
+      const { error } = await supabase.from('tasks').delete().in('id', ids)
+      if (error) throw error
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['tasks'] }),
+    onError: (err) => toast.error(`削除に失敗しました: ${err.message}`),
+  })
+
   function canEdit(task) {
-    return isExecutive || task.assigned_to === user?.id
+    const members = task._groupMembers ?? [task]
+    return isExecutive || members.some((m) => m.assigned_to === user?.id)
   }
 
   return (
@@ -1209,8 +1247,11 @@ export default function Tasks() {
       )}
 
       <div className="space-y-3">
-        {displayedTasks?.map((t, i) => {
+        {bundledTasks?.map((t, i) => {
           const overdue = isOverdue(t)
+          const groupMembers = t._groupMembers ?? [t]
+          const isBundled = groupMembers.length > 1
+          const assigneeNames = groupMembers.map((m) => m.assignee?.full_name).filter(Boolean).join('、')
           return (
           <motion.div key={t.id} initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.25, delay: Math.min(i, 5) * 0.03 }}>
             <Card className={cn('p-5', t.status === 'done' && 'opacity-60')}>
@@ -1220,18 +1261,24 @@ export default function Tasks() {
                   {isExecutive && t.visibility === 'all' && (
                     <Badge variant="secondary">{VISIBILITY_LABEL.all}</Badge>
                   )}
-                  {t.task_group_id && <Badge variant="secondary">協働タスク</Badge>}
+                  {t.task_group_id && <Badge variant="secondary">協働タスク{isBundled ? `（${groupMembers.length}人）` : ''}</Badge>}
                   <Badge variant="outline" className={PRIORITY_CLASS[t.priority]}>
                     優先度: {PRIORITY_LABEL[t.priority]}
                   </Badge>
                   {isExecutive && (
                     <>
-                      <button onClick={() => setEditing(t)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
-                        <Pencil className="h-3.5 w-3.5" />
-                      </button>
+                      {!isBundled && (
+                        <button onClick={() => setEditing(t)} className="text-muted-foreground transition-colors hover:text-primary" aria-label="編集">
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                      )}
                       <button
                         onClick={() => {
-                          if (confirm('このタスクを削除しますか？')) remove.mutate(t.id)
+                          const label = isBundled ? `このタスクを削除しますか？（${groupMembers.length}人分すべて削除されます）` : 'このタスクを削除しますか？'
+                          if (confirm(label)) {
+                            if (isBundled) removeGroup.mutate(groupMembers.map((m) => m.id))
+                            else remove.mutate(t.id)
+                          }
                         }}
                         className="text-muted-foreground transition-colors hover:text-destructive"
                         aria-label="削除"
@@ -1244,7 +1291,7 @@ export default function Tasks() {
               </div>
               {t.description && <p className="mb-2 text-sm text-muted-foreground">{t.description}</p>}
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-                {t.assignee?.full_name && <span>担当: {t.assignee.full_name}</span>}
+                {assigneeNames && <span>担当: {assigneeNames}</span>}
                 {t.due_at && (
                   <span className={overdue ? 'font-medium text-destructive' : ''}>期限: {formatDueAt(t.due_at)}</span>
                 )}
