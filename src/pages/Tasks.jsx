@@ -113,23 +113,42 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   // 担当者 is shown read-only rather than as an editable picker.
   const groupMembers = mode === 'edit' ? (task._groupMembers ?? [task]) : []
   const isGroupEdit = groupMembers.length > 1
-  // If (some of) the group was materialized from a 自動更新 template, show
-  // the attribute/role driving it instead of enumerating every current
-  // member -- same reasoning as the card in Tasks() below.
-  const groupTemplateId = groupMembers.find((m) => m.template_id)?.template_id
-  const { data: groupTemplateLabel } = useQuery({
-    queryKey: ['task_templates', 'label', groupTemplateId],
+  // Editable roster for a group edit -- checking/unchecking someone here
+  // doesn't touch a single row's assigned_to (that's not a coherent
+  // operation for a group), it reconciles the underlying rows: unchecking
+  // deletes that person's row, checking a new person inserts one for them.
+  const [groupAssignedIds, setGroupAssignedIds] = useState(() => new Set(groupMembers.map((m) => m.assigned_to)))
+  function toggleGroupAssignee(id) {
+    setGroupAssignedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+  // Existing task_templates (自動更新 targets) already wired to this
+  // group, so they can be shown as removable chips alongside newly-added
+  // ones. Removing one just unlinks it (ON DELETE SET NULL) -- it never
+  // deletes people it already materialized, they become regular manual
+  // members unless separately unchecked below.
+  const { data: existingGroupTemplates } = useQuery({
+    queryKey: ['task_templates', 'for-group', task?.task_group_id],
     queryFn: async () => {
       const { data, error } = await supabase
         .from('task_templates')
-        .select('attribute_value:member_attribute_values(value), club_role:club_roles(label_ja)')
-        .eq('id', groupTemplateId)
-        .maybeSingle()
+        .select('id, attribute_value:member_attribute_values(value), club_role:club_roles(label_ja)')
+        .eq('task_group_id', task.task_group_id)
       if (error) throw error
-      return data?.attribute_value?.value ?? data?.club_role?.label_ja ?? null
+      return data
     },
-    enabled: !!groupTemplateId,
+    enabled: isGroupEdit && !!task.task_group_id,
   })
+  const [removedTemplateIds, setRemovedTemplateIds] = useState(() => new Set())
+  // Standing targets to add on save -- deferred like everything else in
+  // this form rather than firing immediately, so 保存する is still the one
+  // place changes actually commit. label is captured at toggle time since
+  // the value/role dropdown above may move on to something else before save.
+  const [newGroupStandingTargets, setNewGroupStandingTargets] = useState([])
 
   // Existing task_visible_to rows, for prefilling visibleToIds in edit mode
   // (same shape as Schedule.jsx's existingInvitees / event_invitees).
@@ -152,26 +171,105 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
 
   const save = useMutation({
     mutationFn: async () => {
-      const taskIds = mode === 'edit' ? (isGroupEdit ? groupMembers.map((m) => m.id) : [task.id]) : [crypto.randomUUID()]
-      const payload = {
+      const sharedPayload = {
         title: form.title,
         description: form.description || null,
         priority: form.priority,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
         visibility: form.visibility,
-        // assigned_to is per-row and NOT part of a group edit's shared
-        // fields -- each sibling keeps its own assignee.
-        ...(isGroupEdit ? {} : { assigned_to: form.assigned_to || null }),
       }
-      if (mode === 'edit') {
-        const { error } = await supabase.from('tasks').update(payload).in('id', taskIds)
+
+      let taskIds
+      if (mode === 'edit' && isGroupEdit) {
+        // 1. Unlink removed standing targets. ON DELETE SET NULL keeps
+        // whatever tasks they already materialized -- those people just
+        // become regular manual members unless separately unchecked below.
+        if (removedTemplateIds.size > 0) {
+          const { error } = await supabase.from('task_templates').delete().in('id', [...removedTemplateIds])
+          if (error) throw error
+        }
+
+        // 2. Create newly-added standing targets. This immediately
+        // materializes a task for everyone who matches today (server-side,
+        // scoped to this task_group_id so it can't double up with anyone
+        // already in the group -- see materialize_task_for_profile).
+        const visibleToPayload =
+          form.visibility === 'all'
+            ? []
+            : [
+                ...visibleToIds.map((profile_id) => ({ profile_id })),
+                ...standingAttributeValueIds.map((attribute_value_id) => ({ attribute_value_id })),
+                ...standingRoleIds.map((club_role_id) => ({ club_role_id })),
+              ]
+        for (const target of newGroupStandingTargets) {
+          const { error } = await supabase.rpc('create_task_template', {
+            p_title: form.title,
+            p_description: form.description || null,
+            p_priority: form.priority,
+            p_due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+            p_visibility: form.visibility,
+            p_task_group_id: task.task_group_id,
+            p_attribute_value_id: target.kind === 'attribute' ? target.valueId : null,
+            p_club_role_id: target.kind === 'role' ? Number(target.roleId) : null,
+            p_visible_to: visibleToPayload,
+          })
+          if (error) throw error
+        }
+
+        // 3. Re-fetch the group's rows now that step 2 may have added some,
+        // so the manual reconciliation below never collides with what a
+        // standing target just materialized.
+        const { data: freshGroupTasks, error: freshError } = await supabase
+          .from('tasks')
+          .select('id, assigned_to')
+          .eq('task_group_id', task.task_group_id)
+        if (freshError) throw freshError
+
+        // Only people who were ALREADY in the group when this dialog
+        // opened and got explicitly unchecked are removed -- anyone new
+        // (from step 2, or about to be added below) is never touched just
+        // for not being in a checklist that didn't know about them yet.
+        const originalIds = new Set(groupMembers.map((m) => m.assigned_to))
+        const toRemove = freshGroupTasks.filter((m) => originalIds.has(m.assigned_to) && !groupAssignedIds.has(m.assigned_to))
+        const toRemoveIds = new Set(toRemove.map((m) => m.id))
+        const toKeep = freshGroupTasks.filter((m) => !toRemoveIds.has(m.id))
+        const presentIds = new Set(freshGroupTasks.map((m) => m.assigned_to))
+        const toAddProfileIds = [...groupAssignedIds].filter((id) => !presentIds.has(id))
+
+        if (toRemove.length > 0) {
+          const { error } = await supabase.from('tasks').delete().in('id', toRemove.map((m) => m.id))
+          if (error) throw error
+        }
+        if (toKeep.length > 0) {
+          const { error } = await supabase.from('tasks').update(sharedPayload).in('id', toKeep.map((m) => m.id))
+          if (error) throw error
+        }
+        const groupStatus = groupMembers[0]?.status ?? 'todo'
+        const newRows = toAddProfileIds.map((profile_id) => ({
+          id: crypto.randomUUID(),
+          ...sharedPayload,
+          assigned_to: profile_id,
+          task_group_id: task.task_group_id,
+          status: groupStatus,
+        }))
+        if (newRows.length > 0) {
+          const { error } = await supabase.from('tasks').insert(newRows)
+          if (error) throw error
+        }
+        taskIds = [...toKeep.map((m) => m.id), ...newRows.map((r) => r.id)]
+      } else if (mode === 'edit') {
+        taskIds = [task.id]
+        const { error } = await supabase.from('tasks').update({ ...sharedPayload, assigned_to: form.assigned_to || null }).in('id', taskIds)
         if (error) throw error
-        await supabase.from('task_visible_to').delete().in('task_id', taskIds)
       } else {
-        const { error } = await supabase.from('tasks').insert({ id: taskIds[0], ...payload })
+        taskIds = [crypto.randomUUID()]
+        const { error } = await supabase.from('tasks').insert({ id: taskIds[0], ...sharedPayload, assigned_to: form.assigned_to || null })
         if (error) throw error
       }
 
+      if (mode === 'edit') {
+        await supabase.from('task_visible_to').delete().in('task_id', taskIds)
+      }
       if (form.visibility !== 'all') {
         const visRows = taskIds.flatMap((taskId) => [
           ...visibleToIds.map((profile_id) => ({ task_id: taskId, profile_id })),
@@ -188,6 +286,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       toast.success(mode === 'edit' ? '更新しました' : 'タスクを追加しました')
       queryClient.invalidateQueries({ queryKey: ['tasks'] })
       queryClient.invalidateQueries({ queryKey: ['task_visible_to'] })
+      queryClient.invalidateQueries({ queryKey: ['task_templates'] })
       if (mode === 'create') {
         setForm(EMPTY_FORM)
         setVisFilterAttrId('')
@@ -212,7 +311,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       return data
     },
     // Also needed for the "その他、閲覧できる人を追加" picker under visibility='restricted'.
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
+    enabled: (mode === 'create' && bulkMode) || (mode === 'edit' && isGroupEdit) || (open && form.visibility !== 'all'),
   })
 
   const { data: attributeValues } = useQuery({
@@ -250,7 +349,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       if (error) throw error
       return data
     },
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
+    enabled: (mode === 'create' && bulkMode) || (mode === 'edit' && isGroupEdit) || (open && form.visibility !== 'all'),
   })
 
   const selectedProfiles = (members ?? []).filter((m) => selectedIds.has(m.id))
@@ -263,6 +362,10 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       return next
     })
   }
+  // The 対象条件 filter picker is shared between 一括作成 (writes to
+  // selectedIds) and 協働タスクの編集 (writes to groupAssignedIds) -- they're
+  // never shown at the same time, so one picker/one set of handlers covers
+  // both, branching only on which Set to XOR into.
   async function applyFilterToggle() {
     if (!filterValueId) return
     const { data, error } = await supabase.from('profile_attribute_values').select('profile_id').eq('attribute_value_id', filterValueId)
@@ -271,7 +374,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       return
     }
     const ids = data.map((r) => r.profile_id)
-    const next = new Set(selectedIds)
+    const setTarget = isGroupEdit ? setGroupAssignedIds : setSelectedIds
+    const next = new Set(isGroupEdit ? groupAssignedIds : selectedIds)
     let added = 0
     let removed = 0
     for (const id of ids) {
@@ -283,7 +387,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         added++
       }
     }
-    setSelectedIds(next)
+    setTarget(next)
     toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
   async function applyRoleFilter() {
@@ -295,7 +399,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     }
     const ids = data.map((r) => r.profile_id)
     if (ids.length === 0) return
-    const next = new Set(selectedIds)
+    const setTarget = isGroupEdit ? setGroupAssignedIds : setSelectedIds
+    const next = new Set(isGroupEdit ? groupAssignedIds : selectedIds)
     let added = 0
     let removed = 0
     for (const id of ids) {
@@ -307,7 +412,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         added++
       }
     }
-    setSelectedIds(next)
+    setTarget(next)
     toast.success(`${added}人を選択、${removed}人を解除しました`)
   }
   function selectAllProfiles() {
@@ -318,10 +423,28 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   }
   function toggleStandingAssignAttribute() {
     if (!filterValueId) return
+    if (isGroupEdit) {
+      const label = attributeValues?.find((v) => v.id === filterValueId)?.value ?? filterValueId
+      setNewGroupStandingTargets((prev) =>
+        prev.some((t) => t.kind === 'attribute' && t.valueId === filterValueId)
+          ? prev.filter((t) => !(t.kind === 'attribute' && t.valueId === filterValueId))
+          : [...prev, { kind: 'attribute', valueId: filterValueId, label }]
+      )
+      return
+    }
     setStandingAssignTarget((prev) => (prev?.kind === 'attribute' && prev.valueId === filterValueId ? null : { kind: 'attribute', valueId: filterValueId }))
   }
   function toggleStandingAssignRole() {
     if (!filterRoleId) return
+    if (isGroupEdit) {
+      const label = clubRoles?.find((r) => String(r.id) === String(filterRoleId))?.label_ja ?? filterRoleId
+      setNewGroupStandingTargets((prev) =>
+        prev.some((t) => t.kind === 'role' && t.roleId === filterRoleId)
+          ? prev.filter((t) => !(t.kind === 'role' && t.roleId === filterRoleId))
+          : [...prev, { kind: 'role', roleId: filterRoleId, label }]
+      )
+      return
+    }
     setStandingAssignTarget((prev) => (prev?.kind === 'role' && prev.roleId === filterRoleId ? null : { kind: 'role', roleId: filterRoleId }))
   }
 
@@ -553,15 +676,138 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           </div>
           {!(mode === 'create' && bulkMode) ? (
             <div className="space-y-1.5">
-              <Label>担当者{isGroupEdit ? '（協働タスク・変更不可）' : '（任意）'}</Label>
+              <Label>担当者{isGroupEdit ? `（協働タスク・${groupAssignedIds.size}人）` : '（任意）'}</Label>
               {isGroupEdit ? (
-                <div className="rounded-lg border bg-muted/30 px-3 py-2 text-sm">
-                  {groupTemplateId
-                    ? [
-                        groupTemplateLabel ? `${groupTemplateLabel}（自動更新）` : '...',
-                        ...groupMembers.filter((m) => !m.template_id).map((m) => m.assignee?.full_name).filter(Boolean),
-                      ].join('、')
-                    : groupMembers.map((m) => m.assignee?.full_name).filter(Boolean).join('、')}
+                <div className="space-y-3">
+                  <div className="space-y-1.5 rounded-xl border border-input p-2">
+                    <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Select
+                        value={filterAttrId}
+                        onValueChange={(v) => {
+                          setFilterAttrId(v)
+                          setFilterValueId('')
+                        }}
+                      >
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="属性を選択" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {attributes?.map((a) => (
+                            <SelectItem key={a.id} value={a.id}>
+                              {a.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Select value={filterValueId} onValueChange={setFilterValueId} disabled={!filterAttrId}>
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="値を選択" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {attributeValues?.map((v) => (
+                            <SelectItem key={v.id} value={v.id}>
+                              {v.value}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button type="button" size="sm" variant="secondary" disabled={!filterValueId} onClick={applyFilterToggle}>
+                        選択を切替
+                      </Button>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={newGroupStandingTargets.some((t) => t.kind === 'attribute' && t.valueId === filterValueId) ? 'default' : 'outline'}
+                      disabled={!filterValueId}
+                      onClick={toggleStandingAssignAttribute}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      この属性値を対象に追加（自動更新）
+                    </Button>
+                  </div>
+
+                  <div className="space-y-1.5 rounded-xl border border-input p-2">
+                    <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Select value={filterRoleId} onValueChange={setFilterRoleId}>
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="役職を選択" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {clubRoles?.map((r) => (
+                            <SelectItem key={r.id} value={String(r.id)}>
+                              {r.label_ja}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button type="button" size="sm" variant="secondary" disabled={!filterRoleId} onClick={applyRoleFilter}>
+                        選択を切替
+                      </Button>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={newGroupStandingTargets.some((t) => t.kind === 'role' && t.roleId === filterRoleId) ? 'default' : 'outline'}
+                      disabled={!filterRoleId}
+                      onClick={toggleStandingAssignRole}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      この役職を対象に追加（自動更新）
+                    </Button>
+                  </div>
+
+                  {((existingGroupTemplates?.filter((t) => !removedTemplateIds.has(t.id)).length ?? 0) > 0 || newGroupStandingTargets.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {existingGroupTemplates
+                        ?.filter((t) => !removedTemplateIds.has(t.id))
+                        .map((t) => (
+                          <Badge key={t.id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                            <RefreshCw className="h-3 w-3" />
+                            {t.attribute_value?.value ?? t.club_role?.label_ja ?? '...'}（自動更新）
+                            <button
+                              type="button"
+                              onClick={() => setRemovedTemplateIds((prev) => new Set(prev).add(t.id))}
+                              className="ml-0.5 hover:text-destructive"
+                              aria-label="削除"
+                            >
+                              ×
+                            </button>
+                          </Badge>
+                        ))}
+                      {newGroupStandingTargets.map((t, idx) => (
+                        <Badge key={idx} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                          <RefreshCw className="h-3 w-3" />
+                          {t.label}（自動更新・保存時に追加）
+                          <button
+                            type="button"
+                            onClick={() => setNewGroupStandingTargets((prev) => prev.filter((_, i) => i !== idx))}
+                            className="ml-0.5 hover:text-destructive"
+                            aria-label="削除"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+                  <p className="text-xs text-muted-foreground">
+                    自動更新の対象を外すと、既にタスクを持つ人はそのまま残ります（自動追加の設定だけ止まります）。不要な人はチェックリストで個別に外してください。
+                  </p>
+
+                  <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
+                    {members?.map((m) => (
+                      <label key={m.id} className="flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={groupAssignedIds.has(m.id)} onChange={() => toggleGroupAssignee(m.id)} />
+                        {m.full_name}
+                      </label>
+                    ))}
+                  </div>
                 </div>
               ) : (
                 <Select value={form.assigned_to} onValueChange={(v) => setForm({ ...form, assigned_to: v })}>
@@ -926,7 +1172,12 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           <Button
             type="submit"
             className="w-full"
-            disabled={save.isPending || bulkSave.isPending || (mode === 'create' && bulkMode && selectedProfiles.length === 0 && !standingAssignTarget)}
+            disabled={
+              save.isPending ||
+              bulkSave.isPending ||
+              (mode === 'create' && bulkMode && selectedProfiles.length === 0 && !standingAssignTarget) ||
+              (isGroupEdit && groupAssignedIds.size === 0 && newGroupStandingTargets.length === 0)
+            }
           >
             {mode === 'edit'
               ? '保存する'
