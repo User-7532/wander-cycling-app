@@ -27,6 +27,19 @@ async function getNonObLineUserIds(): Promise<string[]> {
   return identities.filter((i) => !obProfileIds.has(i.profile_id)).map((i) => i.line_user_id)
 }
 
+// Targeted posts notify exactly the resolved audience (via
+// resolve_status_post_recipients, which also picks up standing
+// attribute/role targets) instead of the "everyone minus OB" default --
+// an explicit target overrides the general OB quieting, since it's a
+// deliberate choice by the poster.
+async function getTargetedLineUserIds(statusPostId: string): Promise<string[]> {
+  const { data: profileIds, error } = await supabase.rpc('resolve_status_post_recipients', { p_status_post_id: statusPostId })
+  if (error || !profileIds || profileIds.length === 0) return []
+
+  const { data: identities } = await supabase.from('line_identities').select('profile_id, line_user_id').in('profile_id', profileIds)
+  return (identities ?? []).map((i) => i.line_user_id)
+}
+
 // LINE multicast caps recipients at 500 per call, so chunk.
 async function sendMulticast(to: string[], messages: unknown[], accessToken: string) {
   for (let i = 0; i < to.length; i += 500) {
@@ -65,7 +78,7 @@ serve(async (req) => {
     const { id } = await req.json()
     const { data: post, error } = await supabase
       .from('status_posts')
-      .select('message, category, author:profiles!status_posts_author_id_fkey(full_name)')
+      .select('message, category, visibility, author:profiles!status_posts_author_id_fkey(full_name)')
       .eq('id', id)
       .single()
     if (error || !post) {
@@ -77,9 +90,9 @@ serve(async (req) => {
     const text = `📍 掲示板より（${categoryLabel}）\n${authorName}: ${post.message}`.slice(0, 4900)
 
     const accessToken = Deno.env.get('LINE_BOT_CHANNEL_ACCESS_TOKEN')!
-    const to = await getNonObLineUserIds()
+    const to = post.visibility === 'targeted' ? await getTargetedLineUserIds(id) : await getNonObLineUserIds()
     if (to.length === 0) {
-      return new Response(JSON.stringify({ notified: false, reason: 'no non-OB linked LINE ids' }))
+      return new Response(JSON.stringify({ notified: false, reason: 'no matching linked LINE ids' }))
     }
 
     try {

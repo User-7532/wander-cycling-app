@@ -1209,6 +1209,18 @@ export default function Tasks() {
   const [viewFilterValueId, setViewFilterValueId] = useState('')
   const [viewFilterRoleId, setViewFilterRoleId] = useState('')
   const canFilterView = isExecutive || isYakuin
+  // Filters by 進行度 (independent of, and applied on top of, the by-person
+  // 表示するタスク filter above). Defaults to hiding 完了 so the list stays
+  // focused on what's still outstanding; multi-select via toggle chips.
+  const [statusFilter, setStatusFilter] = useState(() => new Set(['todo', 'in_progress']))
+  function toggleStatusFilter(status) {
+    setStatusFilter((prev) => {
+      const next = new Set(prev)
+      if (next.has(status)) next.delete(status)
+      else next.add(status)
+      return next
+    })
+  }
   // Single shared confirm-before-status-change dialog (not one per task
   // card). Status changes now fire a club-wide LINE notification to
   // everyone who can see the task (DB trigger + Edge Function), so a
@@ -1324,14 +1336,21 @@ export default function Tasks() {
   // it's the same single card no matter how you got there. "自分のみ" stays
   // a single unbundled row (your own instance only), per explicit request.
   const displayedTasks = useMemo(() => {
-    if (!canFilterView) return tasks
+    // 進行度 filter applies first and uniformly -- a 協働タスク's rows always
+    // share one status (kept in lock-step by propagate_shared_task_status),
+    // so filtering individual rows here before any group bundling below
+    // never splits a group inconsistently.
+    const statusFiltered = (tasks ?? []).filter((t) => statusFilter.has(t.status))
 
-    // Always resolve a task's full group membership from the COMPLETE task
-    // list (never a filter-narrowed subset), so its card/edit dialog show
-    // the true collaborator list no matter which view (自分のみ／特定の人／
-    // 条件を満たす人) surfaced it. Only how many CARDS appear differs by view.
+    if (!canFilterView) return statusFiltered
+
+    // Always resolve a task's full group membership from the COMPLETE
+    // (status-filtered) task list (never a further filter-narrowed
+    // subset), so its card/edit dialog show the true collaborator list no
+    // matter which view (自分のみ／特定の人／条件を満たす人) surfaced it. Only
+    // how many CARDS appear differs by view.
     const groupsById = new Map()
-    for (const t of tasks ?? []) {
+    for (const t of statusFiltered) {
       if (!t.task_group_id) continue
       if (!groupsById.has(t.task_group_id)) groupsById.set(t.task_group_id, [])
       groupsById.get(t.task_group_id).push(t)
@@ -1339,7 +1358,7 @@ export default function Tasks() {
     const withGroup = (t) => (t.task_group_id ? { ...t, _groupMembers: groupsById.get(t.task_group_id) } : t)
 
     if (viewFilter === 'mine') {
-      return (tasks ?? []).filter((t) => t.assigned_to === profile?.id).map(withGroup)
+      return statusFiltered.filter((t) => t.assigned_to === profile?.id).map(withGroup)
     }
 
     const matchIds = viewFilter === 'specific' ? (viewFilterProfileId ? [viewFilterProfileId] : []) : (viewFilterProfileIds ?? [])
@@ -1348,7 +1367,7 @@ export default function Tasks() {
 
     const result = []
     const shownGroupIds = new Set()
-    for (const t of tasks ?? []) {
+    for (const t of statusFiltered) {
       if (!matchSet.has(t.assigned_to)) continue
       if (t.task_group_id) {
         if (shownGroupIds.has(t.task_group_id)) continue
@@ -1357,7 +1376,7 @@ export default function Tasks() {
       result.push(withGroup(t))
     }
     return result
-  }, [tasks, canFilterView, viewFilter, profile?.id, viewFilterProfileId, viewFilterProfileIds])
+  }, [tasks, canFilterView, viewFilter, profile?.id, viewFilterProfileId, viewFilterProfileIds, statusFilter])
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }) => {
@@ -1516,6 +1535,20 @@ export default function Tasks() {
           )}
         </div>
       )}
+
+      <div className="mb-6 flex flex-wrap gap-2">
+        {STATUS_ORDER.map((s) => (
+          <Button
+            key={s}
+            type="button"
+            size="sm"
+            variant={statusFilter.has(s) ? 'default' : 'outline'}
+            onClick={() => toggleStatusFilter(s)}
+          >
+            {STATUS_LABEL[s]}
+          </Button>
+        ))}
+      </div>
 
       {isLoading && (
         <div className="space-y-3">
