@@ -484,17 +484,22 @@ export default function Announcements() {
     },
   })
 
-  // Recipient counts for targeted announcements -- RLS on announcement_recipients
-  // is executive-only (same gate as writing announcements), so this only runs
-  // for executives; officers won't see the breakdown even though they can see
-  // the "特定のメンバーのみ" badge itself.
+  // Recipient counts for targeted announcements -- counts DISTINCT resolved
+  // recipients (via announcement_recipient_counts, 0067), not raw
+  // announcement_recipients rows: a row can be a standing attribute/role
+  // target that resolves to someone ALSO picked individually as their own
+  // row, so a raw row count can overcount the real number of people who'll
+  // actually receive it. RLS on announcement_recipients is executive-only
+  // (same gate as writing announcements), so this only runs for executives;
+  // officers won't see the breakdown even though they can see the
+  // "特定のメンバーのみ" badge itself.
   const { data: recipientCounts } = useQuery({
     queryKey: ['announcement_recipients', 'counts'],
     queryFn: async () => {
-      const { data, error } = await supabase.from('announcement_recipients').select('announcement_id')
+      const { data, error } = await supabase.rpc('announcement_recipient_counts')
       if (error) throw error
       const counts = {}
-      for (const r of data) counts[r.announcement_id] = (counts[r.announcement_id] || 0) + 1
+      for (const r of data) counts[r.announcement_id] = r.recipient_count
       return counts
     },
     enabled: isExecutive,
