@@ -8,12 +8,17 @@ const Input = React.forwardRef(({ className, type, ...props }, ref) => {
       type={type}
       className={cn(
         'flex h-11 w-full rounded-xl border border-input bg-white/70 px-4 py-1 text-base shadow-sm transition-colors placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 md:text-sm',
-        // iOS Safari gives date/datetime-local inputs their own
-        // locale-based intrinsic minimum width that plain `width: 100%`
-        // doesn't override, so the box visibly overflows its container on
-        // iPhone (confirmed via screenshot) even though it renders fine on
-        // desktop/Chromium. min-w-0 is the standard fix for this.
-        (type === 'date' || type === 'datetime-local') && 'min-w-0',
+        // iOS Safari renders date/datetime-local inputs with their own
+        // native "menulist" chrome, which has a locale-based intrinsic
+        // width that plain `width: 100%` / `min-width: 0` do NOT override
+        // (confirmed via screenshot -- the box itself overflows past its
+        // container, even the whole page, on real iPhone Safari and LINE's
+        // in-app browser, despite rendering fine on desktop/Chromium).
+        // Stripping that native chrome with appearance:none is the fix
+        // that actually works for this -- tapping still opens the native
+        // date/time picker, only the inline "chip" rendering changes to a
+        // normal text-like box that properly respects CSS width.
+        (type === 'date' || type === 'datetime-local') && 'min-w-0 appearance-none',
         className
       )}
       ref={ref}
