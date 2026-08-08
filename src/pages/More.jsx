@@ -5,6 +5,7 @@ import {
   FolderOpen,
   KeyRound,
   Megaphone,
+  PiggyBank,
   Settings as SettingsIcon,
   Tags,
   TriangleAlert,
@@ -25,6 +26,7 @@ const ITEMS = [
   { to: '/settings', label: '設定', icon: SettingsIcon },
   { to: '/attributes', label: '属性管理', icon: Tags },
   { to: '/finance', label: '会計・会費', icon: Wallet },
+  { to: '/expenses', label: 'マイ家計簿', icon: PiggyBank },
   { to: '/emergency', label: '緊急連絡', icon: TriangleAlert, danger: true },
 ]
 

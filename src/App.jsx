@@ -19,6 +19,7 @@ const Attributes = lazy(() => import('@/pages/Attributes'))
 const Emergency = lazy(() => import('@/pages/Emergency'))
 const Settings = lazy(() => import('@/pages/Settings'))
 const Finance = lazy(() => import('@/pages/Finance'))
+const PersonalExpenses = lazy(() => import('@/pages/PersonalExpenses'))
 const Resources = lazy(() => import('@/pages/Resources'))
 const AccountDirectory = lazy(() => import('@/pages/AccountDirectory'))
 const SiteMap = lazy(() => import('@/pages/SiteMap'))
@@ -70,6 +71,7 @@ function App() {
             <Route path="/emergency" element={<Emergency />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/finance" element={<Finance />} />
+            <Route path="/expenses" element={<PersonalExpenses />} />
             <Route path="/accounts" element={<AccountDirectory />} />
             <Route path="/sitemap" element={<SiteMap />} />
             <Route path="/more" element={<More />} />

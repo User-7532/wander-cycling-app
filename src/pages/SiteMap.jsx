@@ -7,6 +7,7 @@ import {
   ListTodo,
   Megaphone,
   MessageSquare,
+  PiggyBank,
   Settings as SettingsIcon,
   Tags,
   TriangleAlert,
@@ -35,6 +36,7 @@ const SECTIONS = [
       { to: '/settings', label: '設定', icon: SettingsIcon, desc: 'カレンダーリンク・背景画像（アプリ管理者はAI秘書の設定も）' },
       { to: '/attributes', label: '属性管理', icon: Tags, desc: '学年・参加した旅などのタグを追加・自分に設定' },
       { to: '/finance', label: '会計・会費', icon: Wallet, desc: '自分の会費状況・立替払いの申請（アプリ管理者は収支管理も）' },
+      { to: '/expenses', label: 'マイ家計簿', icon: PiggyBank, desc: 'ワンダーサイクリングでの自分の支出を記録（自分専用）' },
     ],
   },
 ]
