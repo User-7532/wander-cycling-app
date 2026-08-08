@@ -225,7 +225,7 @@ export default function PersonalExpenses() {
   const percentile = rank ? Math.round((100 * Number(rank.frugal_rank)) / Number(rank.total_ranked)) : null
 
   const shareText = rank
-    ? `ワンダー家計簿\n月平均: ¥${monthlyAverage.toLocaleString()}\n今月: ¥${totalThisMonth.toLocaleString()}\n累計: ¥${totalAllTime.toLocaleString()}\n順位: ${rank.frugal_rank}位 / ${rank.total_ranked}人中（上位${percentile}%）\n${tierLabel(percentile)}`
+    ? `ワンダー家計簿\n月平均: ¥${monthlyAverage.toLocaleString()}\n今月: ¥${totalThisMonth.toLocaleString()}\n累計: ¥${totalAllTime.toLocaleString()}\n今月の順位: ${rank.frugal_rank}位 / ${rank.total_ranked}人中（上位${percentile}%）\n${tierLabel(percentile)}`
     : ''
 
   return (
@@ -250,11 +250,11 @@ export default function PersonalExpenses() {
       {rank && (
         <Card className="mb-4 space-y-2 border-primary/30 bg-primary/5 p-4">
           <div className="flex items-center justify-between">
-            <p className="text-sm font-bold">シャバさ度</p>
+            <p className="text-sm font-bold">今月のシャバさ度</p>
             <Badge variant="secondary">{tierLabel(percentile)}</Badge>
           </div>
           <p className="text-xs text-muted-foreground">
-            部内 {rank.total_ranked}人中 <span className="font-bold text-foreground">{rank.frugal_rank}位</span>（上位{percentile}%）— 具体的な金額は他の人には分かりません
+            今月の順位: 部内 {rank.total_ranked}人中 <span className="font-bold text-foreground">{rank.frugal_rank}位</span>（上位{percentile}%）— 具体的な金額は他の人には分かりません
           </p>
           <a href={`https://line.me/R/msg/text/?${encodeURIComponent(shareText)}`} target="_blank" rel="noopener noreferrer">
             <Button type="button" size="sm" variant="outline">
