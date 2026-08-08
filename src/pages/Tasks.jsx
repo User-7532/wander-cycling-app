@@ -74,6 +74,13 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [sharedTask, setSharedTask] = useState(false)
   const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
   const [filterRoleId, setFilterRoleId] = useState('')
+  // "Standing" assignment target: instead of (or alongside) flip-selecting a
+  // snapshot of matching people into selectedIds, remember the attribute
+  // value / role itself (see 0066_task_templates.sql). A DB trigger then
+  // auto-creates a task for anyone who gains this attribute/role later.
+  // Limited to a single target (not an AND-chain) so "has this profile
+  // already got a task from this template" stays a simple check.
+  const [standingAssignTarget, setStandingAssignTarget] = useState(null)
   // その他、閲覧できる人（task_visible_to）を選ぶための、上の属性/役職フィルタ
   // と同じ仕組みの別インスタンス。selectedIds（一括作成の対象者）とは独立。
   const [visFilters, setVisFilters] = useState([{ ...EMPTY_FILTER }])
@@ -300,6 +307,14 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   function deselectAllProfiles() {
     setSelectedIds(new Set())
   }
+  function toggleStandingAssignAttribute(valueId) {
+    if (!valueId) return
+    setStandingAssignTarget((prev) => (prev?.kind === 'attribute' && prev.valueId === valueId ? null : { kind: 'attribute', valueId }))
+  }
+  function toggleStandingAssignRole() {
+    if (!filterRoleId) return
+    setStandingAssignTarget((prev) => (prev?.kind === 'role' && prev.roleId === filterRoleId ? null : { kind: 'role', roleId: filterRoleId }))
+  }
 
   // Same AND-chained attribute-filter matching as matchedProfiles above,
   // but for the "その他、閲覧できる人を追加" (task_visible_to) picker shown
@@ -407,8 +422,24 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
 
   const bulkSave = useMutation({
     mutationFn: async () => {
-      const taskGroupId = sharedTask && selectedProfiles.length > 1 ? crypto.randomUUID() : null
-      const rows = selectedProfiles.map((p) => ({
+      const taskGroupId = sharedTask ? crypto.randomUUID() : null
+
+      // People currently matched by the standing target get their task via
+      // create_task_template's own materialization below -- exclude them
+      // from the manual snapshot insert so they don't end up with 2 tasks.
+      let standingMatchedIds = new Set()
+      if (standingAssignTarget?.kind === 'attribute') {
+        const { data, error } = await supabase.from('profile_attribute_values').select('profile_id').eq('attribute_value_id', standingAssignTarget.valueId)
+        if (error) throw error
+        standingMatchedIds = new Set(data.map((r) => r.profile_id))
+      } else if (standingAssignTarget?.kind === 'role') {
+        const { data, error } = await supabase.from('profile_roles').select('profile_id').eq('club_role_id', standingAssignTarget.roleId)
+        if (error) throw error
+        standingMatchedIds = new Set(data.map((r) => r.profile_id))
+      }
+      const manualProfiles = selectedProfiles.filter((p) => !standingMatchedIds.has(p.id))
+
+      const rows = manualProfiles.map((p) => ({
         id: crypto.randomUUID(),
         title: form.title,
         description: form.description || null,
@@ -418,21 +449,47 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
         visibility: form.visibility,
         task_group_id: taskGroupId,
       }))
-      const { error } = await supabase.from('tasks').insert(rows)
-      if (error) throw error
+      if (rows.length > 0) {
+        const { error } = await supabase.from('tasks').insert(rows)
+        if (error) throw error
 
-      if (form.visibility !== 'all') {
-        const visRows = rows.flatMap((r) => [
-          ...visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })),
-          ...standingAttributeValueIds.map((attribute_value_id) => ({ task_id: r.id, attribute_value_id })),
-          ...standingRoleIds.map((club_role_id) => ({ task_id: r.id, club_role_id })),
-        ])
-        if (visRows.length > 0) {
-          const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
-          if (visError) throw visError
+        if (form.visibility !== 'all') {
+          const visRows = rows.flatMap((r) => [
+            ...visibleToIds.map((profile_id) => ({ task_id: r.id, profile_id })),
+            ...standingAttributeValueIds.map((attribute_value_id) => ({ task_id: r.id, attribute_value_id })),
+            ...standingRoleIds.map((club_role_id) => ({ task_id: r.id, club_role_id })),
+          ])
+          if (visRows.length > 0) {
+            const { error: visError } = await supabase.from('task_visible_to').insert(visRows)
+            if (visError) throw visError
+          }
         }
       }
-      return rows.length
+
+      if (standingAssignTarget) {
+        const visibleToPayload =
+          form.visibility === 'all'
+            ? []
+            : [
+                ...visibleToIds.map((profile_id) => ({ profile_id })),
+                ...standingAttributeValueIds.map((attribute_value_id) => ({ attribute_value_id })),
+                ...standingRoleIds.map((club_role_id) => ({ club_role_id })),
+              ]
+        const { error } = await supabase.rpc('create_task_template', {
+          p_title: form.title,
+          p_description: form.description || null,
+          p_priority: form.priority,
+          p_due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+          p_visibility: form.visibility,
+          p_task_group_id: taskGroupId,
+          p_attribute_value_id: standingAssignTarget.kind === 'attribute' ? standingAssignTarget.valueId : null,
+          p_club_role_id: standingAssignTarget.kind === 'role' ? Number(standingAssignTarget.roleId) : null,
+          p_visible_to: visibleToPayload,
+        })
+        if (error) throw error
+      }
+
+      return rows.length + standingMatchedIds.size
     },
     onSuccess: (count) => {
       toast.success(`${count}件のタスクを追加しました`)
@@ -443,6 +500,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setFilters([{ ...EMPTY_FILTER }])
       setFilterRoleId('')
       setSelectedIds(new Set())
+      setStandingAssignTarget(null)
       setVisFilters([{ ...EMPTY_FILTER }])
       setVisFilterRoleId('')
       setVisibleToIds([])
@@ -536,6 +594,21 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                         ))}
                     </SelectContent>
                   </Select>
+                  {filters.length === 1 && (
+                    <button
+                      type="button"
+                      onClick={() => toggleStandingAssignAttribute(f.valueId)}
+                      disabled={!f.valueId}
+                      className={cn(
+                        'transition-colors hover:text-primary disabled:opacity-30',
+                        standingAssignTarget?.kind === 'attribute' && standingAssignTarget.valueId === f.valueId ? 'text-primary' : 'text-muted-foreground'
+                      )}
+                      aria-label="この属性値を持つ人に自動でタスクを作成（新規参入者も含む）"
+                      title="この属性値を持つ人に自動でタスクを作成（新規参入者も含む）"
+                    >
+                      <RefreshCw className="h-4 w-4" />
+                    </button>
+                  )}
                   {filters.length > 1 && (
                     <button type="button" onClick={() => removeFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
                       <Trash2 className="h-4 w-4" />
@@ -552,7 +625,9 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                 </Button>
               </div>
               <p className="text-xs text-muted-foreground">
-                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。{' '}
+                <RefreshCw className="inline h-3 w-3" />
+                （条件が1つのときのみ）で、後からこの属性/役職を持った人にも自動でタスクを作成できます。
               </p>
               {matchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
               {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
@@ -577,8 +652,34 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                   <Button type="button" size="sm" variant="secondary" disabled={!filterRoleId} onClick={applyRoleFilter}>
                     この条件で選択を切替
                   </Button>
+                  <button
+                    type="button"
+                    onClick={toggleStandingAssignRole}
+                    disabled={!filterRoleId}
+                    className={cn(
+                      'transition-colors hover:text-primary disabled:opacity-30',
+                      standingAssignTarget?.kind === 'role' && standingAssignTarget.roleId === filterRoleId ? 'text-primary' : 'text-muted-foreground'
+                    )}
+                    aria-label="この役職の人に自動でタスクを作成（新規参入者も含む）"
+                    title="この役職の人に自動でタスクを作成（新規参入者も含む）"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                  </button>
                 </div>
               </div>
+
+              {standingAssignTarget && (
+                <Badge variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                  <RefreshCw className="h-3 w-3" />
+                  {standingAssignTarget.kind === 'attribute'
+                    ? (attributeValues?.find((v) => v.id === standingAssignTarget.valueId)?.value ?? '...')
+                    : (clubRoles?.find((r) => String(r.id) === String(standingAssignTarget.roleId))?.label_ja ?? '...')}
+                  を自動対象に設定中
+                  <button type="button" onClick={() => setStandingAssignTarget(null)} className="ml-0.5 hover:text-destructive" aria-label="削除">
+                    ×
+                  </button>
+                </Badge>
+              )}
 
               <div className="space-y-1.5 pt-2">
                 <div className="flex items-center justify-between">
@@ -784,7 +885,7 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               )}
             </div>
           )}
-          {mode === 'create' && bulkMode && selectedProfiles.length > 1 && (
+          {mode === 'create' && bulkMode && (selectedProfiles.length > 1 || !!standingAssignTarget) && (
             <div className="space-y-1.5 rounded-xl border border-input p-3">
               <Label>進行方式</Label>
               <Select value={sharedTask ? 'shared' : 'individual'} onValueChange={(v) => setSharedTask(v === 'shared')}>
@@ -825,9 +926,15 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           <Button
             type="submit"
             className="w-full"
-            disabled={save.isPending || bulkSave.isPending || (mode === 'create' && bulkMode && selectedProfiles.length === 0)}
+            disabled={save.isPending || bulkSave.isPending || (mode === 'create' && bulkMode && selectedProfiles.length === 0 && !standingAssignTarget)}
           >
-            {mode === 'edit' ? '保存する' : mode === 'create' && bulkMode ? `${selectedProfiles.length}人にタスクを作成` : '追加する'}
+            {mode === 'edit'
+              ? '保存する'
+              : mode === 'create' && bulkMode
+                ? standingAssignTarget
+                  ? `${selectedProfiles.length}人 + 自動対象にタスクを作成`
+                  : `${selectedProfiles.length}人にタスクを作成`
+                : '追加する'}
           </Button>
         </form>
       </DialogContent>
