@@ -101,6 +101,19 @@ serve(async (req) => {
         )
       console.log('profiles upsert:', profileError ? profileError.message : 'OK')
 
+      // ignoreDuplicates above only INSERTs a brand-new row -- it never
+      // touches a profile that already existed (e.g. one an admin pre-seeded
+      // before this person's first LINE login), so that row's avatar_url
+      // would otherwise stay null forever. Backfill it here on first link,
+      // but only when still null, so a name an admin already set/confirmed
+      // is never touched and a since-customized avatar is never overwritten.
+      const { error: avatarBackfillError } = await supabase
+        .from('profiles')
+        .update({ avatar_url: lineProfile.pictureUrl })
+        .eq('id', authUserId)
+        .is('avatar_url', null)
+      console.log('avatar_url backfill:', avatarBackfillError ? avatarBackfillError.message : 'OK')
+
       const { error: identityError } = await supabase.from('line_identities').upsert(
         {
           line_user_id: lineProfile.userId,

@@ -51,8 +51,6 @@ function isOverdue(task) {
   return task.status !== 'done' && !!task.due_at && new Date(task.due_at).getTime() < Date.now()
 }
 
-const EMPTY_FILTER = { attributeId: '', valueId: '' }
-
 function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   const [form, setForm] = useState(
     mode === 'edit'
@@ -72,7 +70,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   // 買えば全員にとって終わり）。task_group_idを共有する行として作成し、実際の
   // 連鎖完了はDBトリガー(propagate_shared_task_completion, 0059)側で行う。
   const [sharedTask, setSharedTask] = useState(false)
-  const [filters, setFilters] = useState([{ ...EMPTY_FILTER }])
+  const [filterAttrId, setFilterAttrId] = useState('')
+  const [filterValueId, setFilterValueId] = useState('')
   const [filterRoleId, setFilterRoleId] = useState('')
   // "Standing" assignment target: instead of (or alongside) flip-selecting a
   // snapshot of matching people into selectedIds, remember the attribute
@@ -82,8 +81,10 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   // already got a task from this template" stays a simple check.
   const [standingAssignTarget, setStandingAssignTarget] = useState(null)
   // その他、閲覧できる人（task_visible_to）を選ぶための、上の属性/役職フィルタ
-  // と同じ仕組みの別インスタンス。selectedIds（一括作成の対象者）とは独立。
-  const [visFilters, setVisFilters] = useState([{ ...EMPTY_FILTER }])
+  // と同じ仕組みの別インスタンス（Schedule.jsx/Announcements.jsxの招待者
+  // ピッカーと同一パターン）。selectedIds（一括作成の対象者）とは独立。
+  const [visFilterAttrId, setVisFilterAttrId] = useState('')
+  const [visFilterValueId, setVisFilterValueId] = useState('')
   const [visFilterRoleId, setVisFilterRoleId] = useState('')
   const [visibleToIds, setVisibleToIds] = useState([])
   // "Standing" targets: instead of resolving the filter to today's matching
@@ -161,7 +162,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       queryClient.invalidateQueries({ queryKey: ['task_visible_to'] })
       if (mode === 'create') {
         setForm(EMPTY_FORM)
-        setVisFilters([{ ...EMPTY_FILTER }])
+        setVisFilterAttrId('')
+        setVisFilterValueId('')
         setVisFilterRoleId('')
         setVisibleToIds([])
         setStandingAttributeValueIds([])
@@ -186,18 +188,33 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   })
 
   const { data: attributeValues } = useQuery({
-    queryKey: ['member_attribute_values'],
+    queryKey: ['member_attribute_values', filterAttrId],
     queryFn: async () => {
-      const { data, error } = await supabase.from('member_attribute_values').select('id, attribute_id, value').order('sort_order')
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').eq('attribute_id', filterAttrId).order('sort_order')
       if (error) throw error
       return data
     },
-    enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
+    enabled: !!filterAttrId,
   })
 
-  // Role-based bulk selection (separate from the AND-chained attribute
-  // filters above, per profile_roles instead of profile_attribute_values):
-  // pick a club role, then XOR-toggle its members into selectedIds.
+  // Label lookup for the standing-target chip: standingAssignTarget can
+  // reference an attribute value from a DIFFERENT attribute than the one
+  // currently selected in the dropdown above, so it needs its own by-id
+  // fetch rather than reusing attributeValues (same reasoning as
+  // Schedule.jsx's standingAttributeValueLabels).
+  const { data: standingAssignValueLabel } = useQuery({
+    queryKey: ['member_attribute_values', 'standing-assign-label', standingAssignTarget?.valueId],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('value').eq('id', standingAssignTarget.valueId).maybeSingle()
+      if (error) throw error
+      return data?.value ?? null
+    },
+    enabled: standingAssignTarget?.kind === 'attribute' && !!standingAssignTarget.valueId,
+  })
+
+  // Role-based bulk selection (pick a club role, then XOR-toggle its
+  // members into selectedIds), shared between this picker and the
+  // "その他、閲覧できる人を追加" picker below, same as attributes above.
   const { data: clubRoles } = useQuery({
     queryKey: ['club_roles', 'for-task-filter'],
     queryFn: async () => {
@@ -208,49 +225,8 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
     enabled: (mode === 'create' && bulkMode) || (open && form.visibility !== 'all'),
   })
 
-  const validFilters = filters.filter((f) => f.attributeId && f.valueId)
-  const activeValueIds = validFilters.map((f) => f.valueId)
-  const filterKey = activeValueIds.join(',')
-
-  const { data: matchedProfiles, isFetching: matchingLoading } = useQuery({
-    queryKey: ['bulk-task-candidates', filterKey],
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from('profile_attribute_values')
-        .select('profile_id, attribute_value_id, profile:profiles(id, full_name)')
-        .in('attribute_value_id', activeValueIds)
-      if (error) throw error
-      const requiredIds = new Set(activeValueIds)
-      const byProfile = new Map()
-      for (const row of data) {
-        if (!row.profile) continue
-        const entry = byProfile.get(row.profile_id) || { profile: row.profile, values: new Set() }
-        entry.values.add(row.attribute_value_id)
-        byProfile.set(row.profile_id, entry)
-      }
-      return [...byProfile.values()]
-        .filter((entry) => [...requiredIds].every((id) => entry.values.has(id)))
-        .map((entry) => entry.profile)
-        .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ja'))
-    },
-    enabled: mode === 'create' && bulkMode && validFilters.length > 0 && validFilters.length === filters.length,
-  })
-
-  // selectedProfiles is resolved against the full member roster (not just
-  // matchedProfiles) so that people toggled in under an earlier filter
-  // combination stay visible/selected even after the filter condition
-  // above changes.
   const selectedProfiles = (members ?? []).filter((m) => selectedIds.has(m.id))
 
-  function updateFilter(idx, patch) {
-    setFilters((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
-  }
-  function addFilter() {
-    setFilters((prev) => [...prev, { ...EMPTY_FILTER }])
-  }
-  function removeFilter(idx) {
-    setFilters((prev) => prev.filter((_, i) => i !== idx))
-  }
   function toggleProfile(id) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
@@ -259,9 +235,14 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       return next
     })
   }
-  function applyFilterToggle() {
-    const ids = (matchedProfiles ?? []).map((p) => p.id)
-    if (ids.length === 0) return
+  async function applyFilterToggle() {
+    if (!filterValueId) return
+    const { data, error } = await supabase.from('profile_attribute_values').select('profile_id').eq('attribute_value_id', filterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
     const next = new Set(selectedIds)
     let added = 0
     let removed = 0
@@ -307,73 +288,66 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
   function deselectAllProfiles() {
     setSelectedIds(new Set())
   }
-  function toggleStandingAssignAttribute(valueId) {
-    if (!valueId) return
-    setStandingAssignTarget((prev) => (prev?.kind === 'attribute' && prev.valueId === valueId ? null : { kind: 'attribute', valueId }))
+  function toggleStandingAssignAttribute() {
+    if (!filterValueId) return
+    setStandingAssignTarget((prev) => (prev?.kind === 'attribute' && prev.valueId === filterValueId ? null : { kind: 'attribute', valueId: filterValueId }))
   }
   function toggleStandingAssignRole() {
     if (!filterRoleId) return
     setStandingAssignTarget((prev) => (prev?.kind === 'role' && prev.roleId === filterRoleId ? null : { kind: 'role', roleId: filterRoleId }))
   }
 
-  // Same AND-chained attribute-filter matching as matchedProfiles above,
-  // but for the "その他、閲覧できる人を追加" (task_visible_to) picker shown
-  // when visibility='restricted'. Independent of the bulk-assign filters.
-  const validVisFilters = visFilters.filter((f) => f.attributeId && f.valueId)
-  const activeVisValueIds = validVisFilters.map((f) => f.valueId)
-  const visFilterKey = activeVisValueIds.join(',')
-
-  const { data: visMatchedProfiles, isFetching: visMatchingLoading } = useQuery({
-    queryKey: ['vis-task-candidates', visFilterKey],
+  // Same picker pattern as the bulk-assign one above, but for the
+  // "その他、閲覧できる人を追加" (task_visible_to) picker shown when
+  // visibility != 'all'. Independent state, same shape as Schedule.jsx's
+  // RSVP-viewer picker relative to its invitee picker.
+  const { data: visAttributeValues } = useQuery({
+    queryKey: ['member_attribute_values', visFilterAttrId],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('profile_attribute_values')
-        .select('profile_id, attribute_value_id, profile:profiles(id, full_name)')
-        .in('attribute_value_id', activeVisValueIds)
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').eq('attribute_id', visFilterAttrId).order('sort_order')
       if (error) throw error
-      const requiredIds = new Set(activeVisValueIds)
-      const byProfile = new Map()
-      for (const row of data) {
-        if (!row.profile) continue
-        const entry = byProfile.get(row.profile_id) || { profile: row.profile, values: new Set() }
-        entry.values.add(row.attribute_value_id)
-        byProfile.set(row.profile_id, entry)
-      }
-      return [...byProfile.values()]
-        .filter((entry) => [...requiredIds].every((id) => entry.values.has(id)))
-        .map((entry) => entry.profile)
-        .sort((a, b) => a.full_name.localeCompare(b.full_name, 'ja'))
+      return data
     },
-    enabled: open && form.visibility !== 'all' && validVisFilters.length > 0 && validVisFilters.length === visFilters.length,
+    enabled: !!visFilterAttrId,
   })
 
-  function updateVisFilter(idx, patch) {
-    setVisFilters((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)))
-  }
-  function addVisFilter() {
-    setVisFilters((prev) => [...prev, { ...EMPTY_FILTER }])
-  }
-  function removeVisFilter(idx) {
-    setVisFilters((prev) => prev.filter((_, i) => i !== idx))
-  }
+  // Label lookups for the standing-target chips: standingAttributeValueIds
+  // can span attributes other than the one currently selected in the
+  // dropdown above, so they need their own by-id fetch.
+  const { data: standingAttributeValueLabels } = useQuery({
+    queryKey: ['member_attribute_values', 'standing-labels', standingAttributeValueIds],
+    queryFn: async () => {
+      const { data, error } = await supabase.from('member_attribute_values').select('id, value').in('id', standingAttributeValueIds)
+      if (error) throw error
+      return data
+    },
+    enabled: standingAttributeValueIds.length > 0,
+  })
+
   function toggleVisibleTo(id) {
     setVisibleToIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
-  // Adds/removes an attribute value or role itself as a standing target,
-  // reusing the same valueId/visFilterRoleId selection as the flip-toggle
-  // buttons -- no profile resolution, just remembering the id.
-  function toggleStandingAttributeValue(valueId) {
-    if (!valueId) return
-    setStandingAttributeValueIds((prev) => (prev.includes(valueId) ? prev.filter((x) => x !== valueId) : [...prev, valueId]))
+  // Adds/removes the currently-selected attribute value or role itself as a
+  // standing target, reusing the same visFilterValueId/visFilterRoleId
+  // selection as the flip-toggle buttons -- no profile resolution, just
+  // remembering the id.
+  function toggleStandingAttributeValue() {
+    if (!visFilterValueId) return
+    setStandingAttributeValueIds((prev) => (prev.includes(visFilterValueId) ? prev.filter((x) => x !== visFilterValueId) : [...prev, visFilterValueId]))
   }
   function toggleStandingRole() {
     if (!visFilterRoleId) return
     const roleId = Number(visFilterRoleId)
     setStandingRoleIds((prev) => (prev.includes(roleId) ? prev.filter((x) => x !== roleId) : [...prev, roleId]))
   }
-  function applyVisFilterToggle() {
-    const ids = (visMatchedProfiles ?? []).map((p) => p.id)
-    if (ids.length === 0) return
+  async function applyVisFilterToggle() {
+    if (!visFilterValueId) return
+    const { data, error } = await supabase.from('profile_attribute_values').select('profile_id').eq('attribute_value_id', visFilterValueId)
+    if (error) {
+      toast.error('メンバーの取得に失敗しました')
+      return
+    }
+    const ids = data.map((r) => r.profile_id)
     const next = new Set(visibleToIds)
     let added = 0
     let removed = 0
@@ -497,11 +471,13 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
       setForm(EMPTY_FORM)
       setBulkMode(false)
       setSharedTask(false)
-      setFilters([{ ...EMPTY_FILTER }])
+      setFilterAttrId('')
+      setFilterValueId('')
       setFilterRoleId('')
       setSelectedIds(new Set())
       setStandingAssignTarget(null)
-      setVisFilters([{ ...EMPTY_FILTER }])
+      setVisFilterAttrId('')
+      setVisFilterValueId('')
       setVisFilterRoleId('')
       setVisibleToIds([])
       setStandingAttributeValueIds([])
@@ -566,11 +542,18 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
           ) : (
             <div className="space-y-3 rounded-lg border p-3">
               <Label>対象条件</Label>
-              {filters.map((f, idx) => (
-                <div key={idx} className="flex items-center gap-2">
-                  <Select value={f.attributeId} onValueChange={(v) => updateFilter(idx, { attributeId: v, valueId: '' })}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="属性" />
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Select
+                    value={filterAttrId}
+                    onValueChange={(v) => {
+                      setFilterAttrId(v)
+                      setFilterValueId('')
+                    }}
+                  >
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="属性を選択" />
                     </SelectTrigger>
                     <SelectContent>
                       {attributes?.map((a) => (
@@ -580,66 +563,46 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                       ))}
                     </SelectContent>
                   </Select>
-                  <Select value={f.valueId} onValueChange={(v) => updateFilter(idx, { valueId: v })} disabled={!f.attributeId}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="値" />
+                  <Select value={filterValueId} onValueChange={setFilterValueId} disabled={!filterAttrId}>
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="値を選択" />
                     </SelectTrigger>
                     <SelectContent>
-                      {attributeValues
-                        ?.filter((v) => v.attribute_id === f.attributeId)
-                        .map((v) => (
-                          <SelectItem key={v.id} value={v.id}>
-                            {v.value}
-                          </SelectItem>
-                        ))}
+                      {attributeValues?.map((v) => (
+                        <SelectItem key={v.id} value={v.id}>
+                          {v.value}
+                        </SelectItem>
+                      ))}
                     </SelectContent>
                   </Select>
-                  {filters.length === 1 && (
-                    <button
-                      type="button"
-                      onClick={() => toggleStandingAssignAttribute(f.valueId)}
-                      disabled={!f.valueId}
-                      className={cn(
-                        'transition-colors hover:text-primary disabled:opacity-30',
-                        standingAssignTarget?.kind === 'attribute' && standingAssignTarget.valueId === f.valueId ? 'text-primary' : 'text-muted-foreground'
-                      )}
-                      aria-label="この属性値を持つ人に自動でタスクを作成（新規参入者も含む）"
-                      title="この属性値を持つ人に自動でタスクを作成（新規参入者も含む）"
-                    >
-                      <RefreshCw className="h-4 w-4" />
-                    </button>
-                  )}
-                  {filters.length > 1 && (
-                    <button type="button" onClick={() => removeFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
-                      <Trash2 className="h-4 w-4" />
-                    </button>
-                  )}
+                  <Button type="button" size="sm" variant="secondary" disabled={!filterValueId} onClick={applyFilterToggle}>
+                    選択を切替
+                  </Button>
                 </div>
-              ))}
-              <div className="flex flex-wrap items-center gap-2">
-                <Button type="button" size="sm" variant="outline" onClick={addFilter}>
-                  条件を追加（AND）
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={standingAssignTarget?.kind === 'attribute' && standingAssignTarget.valueId === filterValueId ? 'default' : 'outline'}
+                  disabled={!filterValueId}
+                  onClick={toggleStandingAssignAttribute}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この属性値を持つ人に自動でタスクを作成
                 </Button>
-                <Button type="button" size="sm" variant="secondary" disabled={!matchedProfiles?.length} onClick={applyFilterToggle}>
-                  この条件で選択を切替
-                </Button>
+                <p className="text-xs text-muted-foreground">
+                  後からこの属性を持った人にも自動でタスクが作成されます（上のチェックリストは選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
-              <p className="text-xs text-muted-foreground">
-                条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。{' '}
-                <RefreshCw className="inline h-3 w-3" />
-                （条件が1つのときのみ）で、後からこの属性/役職を持った人にも自動でタスクを作成できます。
-              </p>
-              {matchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
-              {!matchingLoading && validFilters.length > 0 && matchedProfiles?.length === 0 && (
-                <p className="text-xs text-muted-foreground">該当する部員がいません</p>
-              )}
 
-              <div className="space-y-2 border-t pt-3">
-                <Label>役職で絞り込む</Label>
-                <div className="flex items-center gap-2">
+              <div className="space-y-1.5 rounded-xl border border-input p-2">
+                <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
                   <Select value={filterRoleId} onValueChange={setFilterRoleId}>
-                    <SelectTrigger className="flex-1">
-                      <SelectValue placeholder="役職" />
+                    <SelectTrigger className="sm:flex-1">
+                      <SelectValue placeholder="役職を選択" />
                     </SelectTrigger>
                     <SelectContent>
                       {clubRoles?.map((r) => (
@@ -650,49 +613,50 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                     </SelectContent>
                   </Select>
                   <Button type="button" size="sm" variant="secondary" disabled={!filterRoleId} onClick={applyRoleFilter}>
-                    この条件で選択を切替
+                    選択を切替
                   </Button>
-                  <button
-                    type="button"
-                    onClick={toggleStandingAssignRole}
-                    disabled={!filterRoleId}
-                    className={cn(
-                      'transition-colors hover:text-primary disabled:opacity-30',
-                      standingAssignTarget?.kind === 'role' && standingAssignTarget.roleId === filterRoleId ? 'text-primary' : 'text-muted-foreground'
-                    )}
-                    aria-label="この役職の人に自動でタスクを作成（新規参入者も含む）"
-                    title="この役職の人に自動でタスクを作成（新規参入者も含む）"
-                  >
-                    <RefreshCw className="h-4 w-4" />
-                  </button>
                 </div>
+                <p className="text-xs text-muted-foreground">
+                  該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                </p>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={standingAssignTarget?.kind === 'role' && standingAssignTarget.roleId === filterRoleId ? 'default' : 'outline'}
+                  disabled={!filterRoleId}
+                  onClick={toggleStandingAssignRole}
+                >
+                  <RefreshCw className="h-3.5 w-3.5" />
+                  この役職の人に自動でタスクを作成
+                </Button>
+                <p className="text-xs text-muted-foreground">
+                  後からこの役職に就いた人にも自動でタスクが作成されます（上のチェックリストは選んだ時点のメンバーで固定されます）。
+                </p>
               </div>
 
               {standingAssignTarget && (
                 <Badge variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
                   <RefreshCw className="h-3 w-3" />
                   {standingAssignTarget.kind === 'attribute'
-                    ? (attributeValues?.find((v) => v.id === standingAssignTarget.valueId)?.value ?? '...')
+                    ? (standingAssignValueLabel ?? '...')
                     : (clubRoles?.find((r) => String(r.id) === String(standingAssignTarget.roleId))?.label_ja ?? '...')}
-                  を自動対象に設定中
+                  を自動対象に設定中（新規参入者にも自動でタスクが作られます）
                   <button type="button" onClick={() => setStandingAssignTarget(null)} className="ml-0.5 hover:text-destructive" aria-label="削除">
                     ×
                   </button>
                 </Badge>
               )}
 
-              <div className="space-y-1.5 pt-2">
-                <div className="flex items-center justify-between">
-                  <Label>対象者（{selectedProfiles.length}人選択中）</Label>
-                  <div className="flex gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={selectAllProfiles}>
-                      全員選択
-                    </Button>
-                    <Button type="button" size="sm" variant="outline" onClick={deselectAllProfiles}>
-                      全員解除
-                    </Button>
-                  </div>
-                </div>
+              <div className="flex gap-2">
+                <Button type="button" size="sm" variant="outline" onClick={selectAllProfiles}>
+                  全員選択
+                </Button>
+                <Button type="button" size="sm" variant="outline" onClick={deselectAllProfiles}>
+                  全員解除
+                </Button>
+              </div>
+              <div className="space-y-1.5 pt-1">
+                <Label>対象者（{selectedProfiles.length}人選択中）</Label>
                 <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
                   {members?.map((m) => (
                     <label key={m.id} className="flex items-center gap-2 text-sm">
@@ -752,11 +716,18 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
               </p>
               {visSectionOpen && (
                 <>
-                  {visFilters.map((f, idx) => (
-                    <div key={idx} className="flex items-center gap-2">
-                      <Select value={f.attributeId} onValueChange={(v) => updateVisFilter(idx, { attributeId: v, valueId: '' })}>
-                        <SelectTrigger className="flex-1">
-                          <SelectValue placeholder="属性" />
+                  <div className="space-y-1.5 rounded-xl border border-input p-2">
+                    <Label className="text-xs text-muted-foreground">属性で一括選択</Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <Select
+                        value={visFilterAttrId}
+                        onValueChange={(v) => {
+                          setVisFilterAttrId(v)
+                          setVisFilterValueId('')
+                        }}
+                      >
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="属性を選択" />
                         </SelectTrigger>
                         <SelectContent>
                           {attributes?.map((a) => (
@@ -766,63 +737,46 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                           ))}
                         </SelectContent>
                       </Select>
-                      <Select value={f.valueId} onValueChange={(v) => updateVisFilter(idx, { valueId: v })} disabled={!f.attributeId}>
-                        <SelectTrigger className="flex-1">
-                          <SelectValue placeholder="値" />
+                      <Select value={visFilterValueId} onValueChange={setVisFilterValueId} disabled={!visFilterAttrId}>
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="値を選択" />
                         </SelectTrigger>
                         <SelectContent>
-                          {attributeValues
-                            ?.filter((v) => v.attribute_id === f.attributeId)
-                            .map((v) => (
-                              <SelectItem key={v.id} value={v.id}>
-                                {v.value}
-                              </SelectItem>
-                            ))}
+                          {visAttributeValues?.map((v) => (
+                            <SelectItem key={v.id} value={v.id}>
+                              {v.value}
+                            </SelectItem>
+                          ))}
                         </SelectContent>
                       </Select>
-                      <button
-                        type="button"
-                        onClick={() => toggleStandingAttributeValue(f.valueId)}
-                        disabled={!f.valueId}
-                        className={cn(
-                          'transition-colors hover:text-primary disabled:opacity-30',
-                          standingAttributeValueIds.includes(f.valueId) ? 'text-primary' : 'text-muted-foreground'
-                        )}
-                        aria-label="この属性値を対象に追加（自動更新）"
-                        title="この属性値を対象に追加（自動更新）"
-                      >
-                        <RefreshCw className="h-4 w-4" />
-                      </button>
-                      {visFilters.length > 1 && (
-                        <button type="button" onClick={() => removeVisFilter(idx)} className="text-muted-foreground transition-colors hover:text-destructive" aria-label="条件を削除">
-                          <Trash2 className="h-4 w-4" />
-                        </button>
-                      )}
+                      <Button type="button" size="sm" variant="secondary" disabled={!visFilterValueId} onClick={applyVisFilterToggle}>
+                        選択を切替
+                      </Button>
                     </div>
-                  ))}
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button type="button" size="sm" variant="outline" onClick={addVisFilter}>
-                      条件を追加（AND）
+                    <p className="text-xs text-muted-foreground">
+                      該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={standingAttributeValueIds.includes(visFilterValueId) ? 'default' : 'outline'}
+                      disabled={!visFilterValueId}
+                      onClick={toggleStandingAttributeValue}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      この属性値を対象に追加（自動更新）
                     </Button>
-                    <Button type="button" size="sm" variant="secondary" disabled={!visMatchedProfiles?.length} onClick={applyVisFilterToggle}>
-                      この条件で選択を切替
-                    </Button>
+                    <p className="text-xs text-muted-foreground">
+                      属性そのものを対象にすると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
+                    </p>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    条件に一致する人の選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。{' '}
-                    <RefreshCw className="inline h-3 w-3" />で属性値そのものを対象に追加すると、後からその属性を持った人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
-                  </p>
-                  {visMatchingLoading && <p className="text-xs text-muted-foreground">検索中...</p>}
-                  {!visMatchingLoading && validVisFilters.length > 0 && visMatchedProfiles?.length === 0 && (
-                    <p className="text-xs text-muted-foreground">該当する部員がいません</p>
-                  )}
 
-                  <div className="space-y-2 border-t pt-3">
-                    <Label>役職で絞り込む</Label>
-                    <div className="flex items-center gap-2">
+                  <div className="space-y-1.5 rounded-xl border border-input p-2">
+                    <Label className="text-xs text-muted-foreground">役職で一括選択</Label>
+                    <div className="flex flex-col gap-2 sm:flex-row">
                       <Select value={visFilterRoleId} onValueChange={setVisFilterRoleId}>
-                        <SelectTrigger className="flex-1">
-                          <SelectValue placeholder="役職" />
+                        <SelectTrigger className="sm:flex-1">
+                          <SelectValue placeholder="役職を選択" />
                         </SelectTrigger>
                         <SelectContent>
                           {clubRoles?.map((r) => (
@@ -833,62 +787,69 @@ function TaskFormDialog({ mode, task, members, trigger, open, onOpenChange }) {
                         </SelectContent>
                       </Select>
                       <Button type="button" size="sm" variant="secondary" disabled={!visFilterRoleId} onClick={applyVisRoleFilter}>
-                        この条件で選択を切替
-                      </Button>
-                      <Button type="button" size="sm" variant="outline" disabled={!visFilterRoleId} onClick={toggleStandingRole}>
-                        <RefreshCw className="h-4 w-4" />
-                        役職を対象に追加
+                        選択を切替
                       </Button>
                     </div>
+                    <p className="text-xs text-muted-foreground">
+                      該当メンバーの選択状態を反転します（選択中なら解除、未選択なら選択）。「全員選択」後に条件を切り替えると、その条件の人だけ除外できます。
+                    </p>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={standingRoleIds.includes(Number(visFilterRoleId)) ? 'default' : 'outline'}
+                      disabled={!visFilterRoleId}
+                      onClick={toggleStandingRole}
+                    >
+                      <RefreshCw className="h-3.5 w-3.5" />
+                      この役職を対象に追加（自動更新）
+                    </Button>
                     <p className="text-xs text-muted-foreground">
                       役職そのものを対象にすると、後からその役職に就いた人も自動的に対象に含まれます（個人選択は選んだ時点のメンバーで固定されます）。
                     </p>
                   </div>
 
-                  <div className="space-y-1.5 pt-2">
-                    <div className="flex items-center justify-between">
-                      <Label>対象者（{visibleToIds.length}人選択中）</Label>
-                      <div className="flex gap-2">
-                        <Button type="button" size="sm" variant="outline" onClick={selectAllVisibleTo}>
-                          全員選択
-                        </Button>
-                        <Button type="button" size="sm" variant="outline" onClick={deselectAllVisibleTo}>
-                          全員解除
-                        </Button>
-                      </div>
+                  <div className="flex gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={selectAllVisibleTo}>
+                      全員選択
+                    </Button>
+                    <Button type="button" size="sm" variant="outline" onClick={deselectAllVisibleTo}>
+                      全員解除
+                    </Button>
+                  </div>
+                  {(standingAttributeValueIds.length > 0 || standingRoleIds.length > 0) && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {standingAttributeValueIds.map((id) => (
+                        <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                          <RefreshCw className="h-3 w-3" />
+                          {standingAttributeValueLabels?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
+                          <button
+                            type="button"
+                            onClick={() => setStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
+                            className="ml-0.5 hover:text-destructive"
+                            aria-label="削除"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
+                      {standingRoleIds.map((id) => (
+                        <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
+                          <RefreshCw className="h-3 w-3" />
+                          {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
+                          <button
+                            type="button"
+                            onClick={() => setStandingRoleIds((prev) => prev.filter((x) => x !== id))}
+                            className="ml-0.5 hover:text-destructive"
+                            aria-label="削除"
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      ))}
                     </div>
-                    {(standingAttributeValueIds.length > 0 || standingRoleIds.length > 0) && (
-                      <div className="flex flex-wrap gap-1.5">
-                        {standingAttributeValueIds.map((id) => (
-                          <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
-                            <RefreshCw className="h-3 w-3" />
-                            {attributeValues?.find((v) => v.id === id)?.value ?? '...'}（自動更新）
-                            <button
-                              type="button"
-                              onClick={() => setStandingAttributeValueIds((prev) => prev.filter((x) => x !== id))}
-                              className="ml-0.5 hover:text-destructive"
-                              aria-label="削除"
-                            >
-                              ×
-                            </button>
-                          </Badge>
-                        ))}
-                        {standingRoleIds.map((id) => (
-                          <Badge key={id} variant="secondary" className="gap-1 border border-primary/40 bg-primary/10 text-primary">
-                            <RefreshCw className="h-3 w-3" />
-                            {clubRoles?.find((r) => r.id === id)?.label_ja ?? '...'}（自動更新）
-                            <button
-                              type="button"
-                              onClick={() => setStandingRoleIds((prev) => prev.filter((x) => x !== id))}
-                              className="ml-0.5 hover:text-destructive"
-                              aria-label="削除"
-                            >
-                              ×
-                            </button>
-                          </Badge>
-                        ))}
-                      </div>
-                    )}
+                  )}
+                  <div className="space-y-1.5 pt-1">
+                    <Label>対象者（{visibleToIds.length}人選択中）</Label>
                     <div className="max-h-40 space-y-1 overflow-y-auto rounded-md border p-2">
                       {members?.map((m) => (
                         <label key={m.id} className="flex items-center gap-2 text-sm">
@@ -1040,39 +1001,47 @@ export default function Tasks() {
     enabled: canFilterView && viewFilter === 'condition' && (!!viewFilterRoleId || !!viewFilterValueId),
   })
 
-  const displayedTasks = !canFilterView
-    ? tasks
-    : (tasks ?? []).filter((t) => {
-        if (viewFilter === 'specific') return !!viewFilterProfileId && t.assigned_to === viewFilterProfileId
-        if (viewFilter === 'condition') return (viewFilterProfileIds ?? []).includes(t.assigned_to)
-        return t.assigned_to === profile?.id
-      })
+  // A 協働タスク's group membership must always be computed from the FULL
+  // task list, never from a filter-narrowed subset -- otherwise the same
+  // real-world task renders with a different member list/count depending on
+  // which filter (role vs. attribute) happens to be active, since each one
+  // only keeps the rows matching ITS condition. The active filter only
+  // decides whether a group is shown at all (does at least one member match
+  // it); once shown, every card lists the group's complete membership, so
+  // it's the same single card no matter how you got there. "自分のみ" stays
+  // a single unbundled row (your own instance only), per explicit request.
+  const displayedTasks = useMemo(() => {
+    if (!canFilterView) return tasks
 
-  // Under "条件を満たす人" (a role/attribute can match several people at
-  // once), a 協働タスク shared across several matching members used to show
-  // up as one identical-looking card per person -- not elegant. Bundle rows
-  // sharing a task_group_id into a single card there. "自分のみ"/"特定の人"
-  // never have more than one matching row per group, so they're untouched.
-  const bundledTasks = useMemo(() => {
-    if (viewFilter !== 'condition' || !displayedTasks) return displayedTasks
-    const groups = new Map()
+    if (viewFilter === 'mine') {
+      return (tasks ?? []).filter((t) => t.assigned_to === profile?.id)
+    }
+
+    const matchIds = viewFilter === 'specific' ? (viewFilterProfileId ? [viewFilterProfileId] : []) : (viewFilterProfileIds ?? [])
+    const matchSet = new Set(matchIds)
+    if (matchSet.size === 0) return []
+
+    const groupsById = new Map()
+    for (const t of tasks ?? []) {
+      if (!t.task_group_id) continue
+      if (!groupsById.has(t.task_group_id)) groupsById.set(t.task_group_id, { ...t, _groupMembers: [] })
+      groupsById.get(t.task_group_id)._groupMembers.push(t)
+    }
+
     const result = []
-    for (const t of displayedTasks) {
-      if (!t.task_group_id) {
-        result.push(t)
-        continue
-      }
-      const bundle = groups.get(t.task_group_id)
-      if (bundle) {
-        bundle._groupMembers.push(t)
+    const shownGroupIds = new Set()
+    for (const t of tasks ?? []) {
+      if (!matchSet.has(t.assigned_to)) continue
+      if (t.task_group_id) {
+        if (shownGroupIds.has(t.task_group_id)) continue
+        shownGroupIds.add(t.task_group_id)
+        result.push(groupsById.get(t.task_group_id))
       } else {
-        const newBundle = { ...t, _groupMembers: [t] }
-        groups.set(t.task_group_id, newBundle)
-        result.push(newBundle)
+        result.push(t)
       }
     }
     return result
-  }, [displayedTasks, viewFilter])
+  }, [tasks, canFilterView, viewFilter, profile?.id, viewFilterProfileId, viewFilterProfileIds])
 
   const updateStatus = useMutation({
     mutationFn: async ({ id, status }) => {
@@ -1247,7 +1216,7 @@ export default function Tasks() {
       )}
 
       <div className="space-y-3">
-        {bundledTasks?.map((t, i) => {
+        {displayedTasks?.map((t, i) => {
           const overdue = isOverdue(t)
           const groupMembers = t._groupMembers ?? [t]
           const isBundled = groupMembers.length > 1
